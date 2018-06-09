@@ -337,5 +337,4 @@
     if ((_dst)) *(_dst) = (_val) 
 #endif
 
-
 #endif /* !defined(__PAL_H__) */
