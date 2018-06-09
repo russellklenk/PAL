@@ -11,6 +11,7 @@
 
 #ifndef PAL_NO_INCLUDES
 #include <Windows.h>
+#include <strsafe.h>
 #endif
 
 /* @summary Define the data associated with an open file.
