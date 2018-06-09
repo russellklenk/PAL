@@ -13,7 +13,8 @@
             "stopAtEntry": true,
             "cwd": "${workspaceFolder}",
             "environment": [],
-            "externalConsole": true
+            "externalConsole": true, 
+            "symbolSearchPath": "SRV*F:\\SymCache*http://msdl.microsoft.com/download/symbols"
         }
     ]
 }
