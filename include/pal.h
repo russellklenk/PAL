@@ -328,4 +328,14 @@
     #define PAL_API(_rt)                      extern _rt
 #endif
 
+/* @summary Assign a value to an output argument.
+ * @param _dst A pointer to the destination location.
+ * @param _val The value to assign to the destination location.
+ */
+#ifndef PAL_Assign
+#define PAL_Assign(_dst, _val)                                                 \
+    if ((_dst)) *(_dst) = (_val) 
+#endif
+
+
 #endif /* !defined(__PAL_H__) */
