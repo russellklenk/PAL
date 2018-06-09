@@ -11,6 +11,7 @@
 
 #ifndef PAL_NO_INCLUDES
 #include <Windows.h>
+#include <strsafe.h>
 #endif
 
 #endif /* __PAL_WIN32_STRING_H__ */

@@ -9,6 +9,46 @@
 #include "pal.h"
 #endif
 
+/* @summary Intern a UTF-8 encoded string in a string table.
+ * @param _table The PAL_STRING_TABLE in which the string will be interned.
+ * @param _str A nul-terminated, UTF-8 encoded string to intern.
+ * @return A pointer to the interned string data.
+ */
+#ifndef PAL_StringTableInternUtf8
+#define PAL_StringTableInternUtf8(_table, _str)                                \
+    (pal_utf8_t*) PAL_StringTableIntern((_table), (_str))
+#endif
+
+/* @summary Intern a UTF-16 encoded string in a string table.
+ * @param _table The PAL_STRING_TABLE in which the string will be interned.
+ * @param _str A nul-terminated, UTF-16 encoded string to intern.
+ * @return A pointer to the interned string data.
+ */
+#ifndef PAL_StringTableInternUtf16
+#define PAL_StringTableInternUtf16(_table, _str)                               \
+    (pal_utf16_t*) PAL_StringTableIntern((_table), (_str))
+#endif
+
+/* @summary Intern a UTF-32 encoded string in a string table.
+ * @param _table The PAL_STRING_TABLE in which the string will be interned.
+ * @param _str A nul-terminated, UTF-32 encoded string to intern.
+ * @return A pointer to the interned string data.
+ */
+#ifndef PAL_StringTableInternUtf32
+#define PAL_StringTableInternUtf32(_table, _str)                               \
+    (pal_utf32_t*) PAL_StringTableIntern((_table), (_str))
+#endif
+
+/* @summary Intern a native-encoded string in a string table.
+ * @param _table The PAL_STRING_TABLE in which the string will be interned.
+ * @param _str A nul-terminated, native encoded string to intern.
+ * @return A pointer to the interned string data.
+ */
+#ifndef PAL_StringTableInternNative
+#define PAL_StringTableInternNative(_table, _str)                              \
+    (pal_char_t *) PAL_StringTableIntern((_table), (_str))
+#endif
+
 /* @summary Forward-declare the types exported by this module.
  * The type definitions are included in the platform-specific header.
  */
