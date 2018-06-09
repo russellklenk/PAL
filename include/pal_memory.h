@@ -13,6 +13,138 @@
 #include "pal.h"
 #endif
 
+/* @summary Define various shifts, masks used when working with PAL_HANDLEs.
+ * These values are used when constructing and breaking apart PAL_HANDLE values.
+ * A PAL_HANDLE consists of the following packed into a 32-bit unsigned integer:
+ * 31.|.......|..........|..........|....0
+ *   V|NNNNNNN|CCCCCCCCCC|IIIIIIIIII|GGGG
+ * Starting from the most signficant bit:
+ * - V is set if the handle was valid at some point.
+ * - N is a namespace or type value used to differentiate handles coming from different handle tables.
+ * - C is a chunk index. A handle table is divided into 1024 equal-sized, independent chunks.
+ * - I is an index within the chunk. Each chunk can hold 1024 handle values.
+ * - G is a generation counter used to differentiate handle slots that have been recycled.
+ * The bits are ordered so that if you have a collection of handles, and then sort them, they will be 
+ * grouped first by type, then by chunk, then by index within chunk.
+ */
+#ifndef PAL_HANDLE_CONSTANTS
+    #define PAL_HANDLE_CONSTANTS
+    #define PAL_HANDLE_INVALID                0UL
+    #define PAL_HANDLE_TABLE_MIN_OBJECT_COUNT 1
+    #define PAL_HANDLE_TABLE_MAX_OBJECT_COUNT 1048576UL
+    #define PAL_HANDLE_GENER_BITS             4
+    #define PAL_HANDLE_INDEX_BITS             10
+    #define PAL_HANDLE_CHUNK_BITS             10
+    #define PAL_HANDLE_NAMES_BITS             7
+    #define PAL_HANDLE_VALID_BITS             1
+    #define PAL_HANDLE_GENER_SHIFT            0
+    #define PAL_HANDLE_INDEX_SHIFT            (PAL_HANDLE_GENER_SHIFT + PAL_HANDLE_GENER_BITS)
+    #define PAL_HANDLE_CHUNK_SHIFT            (PAL_HANDLE_INDEX_SHIFT + PAL_HANDLE_INDEX_BITS)
+    #define PAL_HANDLE_NAMES_SHIFT            (PAL_HANDLE_CHUNK_SHIFT + PAL_HANDLE_CHUNK_BITS)
+    #define PAL_HANDLE_VALID_SHIFT            (PAL_HANDLE_NAMES_SHIFT + PAL_HANDLE_NAMES_BITS)
+    #define PAL_HANDLE_GENER_MASK             ((1UL << PAL_HANDLE_GENER_BITS) - 1)
+    #define PAL_HANDLE_INDEX_MASK             ((1UL << PAL_HANDLE_INDEX_BITS) - 1)
+    #define PAL_HANDLE_CHUNK_MASK             ((1UL << PAL_HANDLE_CHUNK_BITS) - 1)
+    #define PAL_HANDLE_NAMES_MASK             ((1UL << PAL_HANDLE_NAMES_BITS) - 1)
+    #define PAL_HANDLE_VALID_MASK             ((1UL << PAL_HANDLE_VALID_BITS) - 1)
+    #define PAL_HANDLE_GENER_MASK_PACKED      (PAL_HANDLE_GENER_MASK << PAL_HANDLE_GENER_SHIFT)
+    #define PAL_HANDLE_INDEX_MASK_PACKED      (PAL_HANDLE_INDEX_MASK << PAL_HANDLE_INDEX_SHIFT)
+    #define PAL_HANDLE_CHUNK_MASK_PACKED      (PAL_HANDLE_CHUNK_MASK << PAL_HANDLE_CHUNK_SHIFT)
+    #define PAL_HANDLE_NAMES_MASK_PACKED      (PAL_HANDLE_NAMES_MASK << PAL_HANDLE_NAMES_SHIFT)
+    #define PAL_HANDLE_VALID_MASK_PACKED      (PAL_HANDLE_VALID_MASK << PAL_HANDLE_VALID_SHIFT)
+    #define PAL_HANDLE_GENER_ADD_PACKED       (1UL << PAL_HANDLE_GENER_SHIFT)
+    #define PAL_HANDLE_CHUNK_CAPACITY         (1UL << PAL_HANDLE_INDEX_BITS)
+    #define PAL_HANDLE_CHUNK_COUNT            (1UL << PAL_HANDLE_CHUNK_BITS)
+    #define PAL_HANDLE_CHUNK_WORD_BITS        64
+    #define PAL_HANDLE_CHUNK_WORD_SHIFT       6
+    #define PAL_HANDLE_CHUNK_WORD_MASK        (PAL_HANDLE_CHUNK_WORD_BITS - 1)
+    #define PAL_HANDLE_CHUNK_WORD_COUNT       (PAL_HANDLE_CHUNK_COUNT >> PAL_HANDLE_CHUNK_WORD_SHIFT)
+    #define PAL_HANDLE_CHUNK_WORD_ALL_SET     (~0ULL)
+    #define PAL_HANDLE_NAMES_MIN              0
+    #define PAL_HANDLE_NAMES_MAX              ((1UL << PAL_HANDLE_NAMES_BITS) - 1)
+    #define PAL_HANDLE_NAMES_COUNT            (1UL << PAL_HANDLE_NAMES_BITS)
+#endif
+
+/* @summary Calculate the number of items in a fixed-length array.
+ * @param _array The fixed-length array.
+ * @return A pal_uint32_t specifying the number of items in the array.
+ */
+#ifndef PAL_CountOf
+#define PAL_CountOf(_array)                                                    \
+    ((pal_uint32_t)(sizeof((_array)) / sizeof((_array)[0])))
+#endif
+
+/* @summary Retrieve the byte offset of a field from the start of a structure.
+ * @param _type The typename, which must be a struct or a class type.
+ * @param _field The fieldname within the struct or class type whose offset will be retrieved.
+ */
+#ifndef PAL_OffsetOf
+#define PAL_OffsetOf(_type, _field)                                            \
+    PAL_OFFSET_OF(_type, _field)
+#endif
+
+/* @summary Retrieve the size of a particular type, in bytes. 
+ * @param _type A typename, such as int, specifying the type whose size is to be retrieved.
+ */
+#ifndef PAL_SizeOf
+#define PAL_SizeOf(_type)                                                      \
+    sizeof(_type)
+#endif
+
+/* @summary Retrieve the alignment of a particular type, in bytes.
+ * @param _type A typename, such as int, specifying the type whose alignment is to be retrieved.
+ */
+#ifndef PAL_AlignOf
+#define PAL_AlignOf(_type)                                                     \
+    PAL_ALIGN_OF(_type)
+#endif
+
+/* @summary Align a non-zero size up to the nearest even multiple of a given power-of-two.
+ * @param _quantity The size value to align up.
+ * @param _alignment The desired power-of-two alignment.
+ */
+#ifndef PAL_AlignUp
+#define PAL_AlignUp(_quantity, _alignment)                                     \
+    (((_quantity) + ((_alignment)-1)) & ~((_alignment)-1))
+#endif
+
+/* @summary For a given address, return the address aligned for a particular type.
+ * @param _address The unaligned address.
+ * @param _type A typename, such as int, specifying the type that is to be accessed.
+ */
+#ifndef PAL_AlignFor
+#define PAL_AlignFor(_address, _type)                                          \
+    ((void*)(((pal_uint8_t*)(_address)) + ((((PAL_ALIGN_OF(_type))-1)) & ~((PAL_ALIGN_OF(_type))-1))))
+#endif
+
+/* @summary For a given type, calculate the maximum number of bytes that will need to be allocated for a single instance.
+ * @param _type A typename, such as int, specifying the type whose allocation size is being queried.
+ */
+#ifndef PAL_AllocationSizeType
+#define PAL_AllocationSizeType(_type)                                          \
+    ((sizeof(_type)) + (PAL_ALIGN_OF(_type)-1))
+#endif
+
+/* @summary For a given type, calculate the maximum number of bytes that will need to be allocated for an array of a given capacity.
+ * @param _type A typename, such as int, specifying the type whose allocation size is being queried.
+ * @param _count The number of elements in the array.
+ */
+#ifndef PAL_AllocationSizeArray
+#define PAL_AllocationSizeArray(_type, _count)                                 \
+    ((sizeof(_type) * (_count)) + (PAL_ALIGN_OF(_type)-1))
+#endif
+
+/* @summary Given a struct size and required alignment, calculate the maximum number of bytes that will need to be allocated for an array of a given capacity.
+ * @param _objsize The object size, in bytes.
+ * @param _objalign The required alignment of the object, in bytes.
+ * @param _count The number of elements in the array.
+ */
+#ifndef PAL_AllocationSizeArrayRaw
+#define PAL_AllocationSizeArrayRaw(_objsize, _objalign, _count)                \
+    (((_objsize) * (_count)) + ((_objalign)-1))
+#endif
+
+
 /* @summary Swap the bytes in a two-byte value.
  * @param _v The value to byte swap.
  * @return The byte swapped value.
@@ -51,11 +183,221 @@
       (((_v) << 56) & 0xFF00000000000000ULL) )
 #endif
 
+/* @summary Allocate host memory with the correct size and alignment for an instance of a given type from a memory arena.
+ * @param _arena The PAL_MEMORY_ARENA from which the allocation is being made.
+ * @param _type A typename, such as int, specifying the type being allocated.
+ * @return A pointer to the start of the allocated memory block, or NULL.
+ */
+#ifndef PAL_MemoryArenaAllocateHostType
+#define PAL_MemoryArenaAllocateHostType(_arena, _type)                         \
+    ((_type*) PAL_MemoryArenaAllocateHostNoBlock((_arena), sizeof(_type), PAL_ALIGN_OF(_type)))
+#endif
+
+/* @summary Allocate memory with the correct size and alignment for an array of instance of a given type from a memory arena.
+ * @param _arena The PAL_MEMORY_ARENA from which the allocation is being made.
+ * @param _type A typename, such as int, specifying the type being allocated.
+ * @param _count The number of elements in the array.
+ * @return A pointer to the start of the allocated memory block, or NULL.
+ */
+#ifndef PAL_MemoryArenaAllocateHostArray
+#define PAL_MemoryArenaAllocateHostArray(_arena, _type, _count)                \
+    ((_type*) PAL_MemoryArenaAllocateHostNoBlock((_arena), sizeof(_type) * (_count), PAL_ALIGN_OF(_type)))
+#endif
+
+/* @summary Allocate memory with the given object size and alignment for an array of object data from a memory arena.
+ * @param _arena The PAL_MEMORY_ARENA from which the allocation is being made.
+ * @param _objsize The object size, in bytes.
+ * @param _count The number of elements in the array.
+ * @param _align The object alignment, in bytes.
+ * @return A pointer to the start of the allocated memory block, or NULL.
+ */
+#ifndef PAL_MemoryArenaAllocateHostArrayRaw
+#define PAL_MemoryArenaAllocateHostArrayRaw(_arena, _objsize, _align, _count)  \
+    ((pal_uint8_t*) PAL_MemoryArenaAllocateHostNoBlock((_arena), (_objsize) * (_count), (_align)))
+#endif
+
+/* @summary Define a memory stream within a PAL_MEMORY_LAYOUT.
+ * @param _layout The PAL_MEMORY_LAYOUT to update.
+ * @param _type A typename, such as int, specifying the type of the elements in the data stream.
+ */
+#ifndef PAL_MemoryLayoutAdd
+#define PAL_MemoryLayoutAdd(_layout, _type)                                    \
+    PAL_MemoryLayoutDefineStream((_layout), PAL_SizeOf(_type), PAL_AlignOf(_type))
+#endif
+
+/* @summary Retrieve a pointer to the start of a data stream within a PAL_MEMORY_VIEW.
+ * @param _type A typename, such as int, specifying the type of the elements in the data stream.
+ * @param _view The PAL_MEMORY_VIEW.
+ * @param _stream The zero-based index of the data stream to access.
+ */
+#ifndef PAL_MemoryViewStreamBegin
+#define PAL_MemoryViewStreamBegin(_type, _view, _stream)                       \
+    ((_type*)((_view)->Stream[(_stream)]))
+#endif
+
+/* @summary Retrieve a pointer to a specific element in a data stream within in a PAL_MEMORY_VIEW.
+ * @param _type A typename, such as int, specifying the type of elements in the data stream.
+ * @param _view The PAL_MEMORY_VIEW.
+ * @param _stream The zero-based index of the data stream to access.
+ * @param _element The zero-based index of the element to access.
+ */
+#ifndef PAL_MemoryViewStreamAt
+#define PAL_MemoryViewStreamAt(_type, _view, _stream, _element)                \
+    ((_type*)((_view)->Stream[(_stream)] + ((_element) * ((_view)->Stride[(_stream)]))))
+#endif
+
+/* @summary Retrieve the number of data streams defined for a PAL_MEMORY_VIEW.
+ * @param _view The PAL_MEMORY_VIEW to query.
+ */
+#ifndef PAL_MemoryViewStreamCount
+#define PAL_MemoryViewStreamCount(_view)                                       \
+    ((_view)->StreamCount)
+#endif
+
+/* @summary Retrieve the number of data elements per-stream for a PAL_MEMORY_VIEW.
+ * @param _view The PAL_MEMORY_VIEW to query.
+ */
+#ifndef PAL_MemoryViewElementCount
+#define PAL_MemoryViewElementCount(_view)                                      \
+    ((_view)->ElementCount)
+#endif
+
+/* @summary Retrieve the layout of the data stored within a PAL_HANDLE_TABLE.
+ * @param _table The PAL_HANDLE_TABLE to query.
+ * @return A pointer to a PAL_MEMORY_LAYOUT specifying the data layout.
+ */
+#ifndef PAL_HandleTableGetDataLayout
+#define PAL_HandleTableGetDataLayout(_table)                                   \
+    (&(_table)->DataLayout)
+#endif
+
+/* @summary Retrieve the number of items stored in a specific handle table chunk.
+ * @param _table The PAL_HANDLE_TABLE to query.
+ * @param _index The zero-based index of the chunk to query.
+ */
+#ifndef PAL_HandleTableGetChunkItemCount
+#define PAL_HandleTableGetChunkItemCount(_table, _index)                       \
+    ((_table)->ChunkCounts[(_index)])
+#endif
+
+/* @summary Set the number of items stored in a specific handle table chunk.
+ * @param _table The PAL_HANDLE_TABLE to update.
+ * @param _index The zero-based index of the chunk to update.
+ * @param _count The number of items stored in the specified chunk.
+ */
+#ifndef PAL_HandleTableSetChunkItemCount
+#define PAL_HandleTableSetChunkItemCount(_table, _index, _count)               \
+    ((_table)->ChunkCounts[(_index)] = (_count))
+#endif
+
+/* @summary Retrieve the number of items stored in a specific handle table chunk.
+ * @param _table The PAL_HANDLE_TABLE to query.
+ * @param _index The zero-based index of the chunk to query.
+ */
+#ifndef PAL__HandleTableGetChunkItemCount
+#define PAL__HandleTableGetChunkItemCount(_table, _index)                      \
+    PAL_HandleTableGetChunkItemCount((_table), (_index))
+#endif
+
+/* @summary Set the number of items stored in a specific handle table chunk.
+ * @param _table The PAL_HANDLE_TABLE to update.
+ * @param _index The zero-based index of the chunk to update.
+ * @param _count The number of items stored in the specified chunk.
+ */
+#ifndef PAL__HandleTableSetChunkItemCount
+#define PAL__HandleTableSetChunkItemCount(_table, _index, _count)              \
+    PAL_HandleTableSetChunkItemCount((_table), (_index), (_count))
+#endif
+
+/* @summary Retrieve the live status for a handle table chunk state value.
+ * @param _state The state value to query.
+ * @return Non-zero if the state value is live.
+ */
+#ifndef PAL__HandleStateGetLive
+#define PAL__HandleStateGetLive(_state)                                        \
+    (((_state) & PAL_HANDLE_VALID_MASK_PACKED) >> PAL_HANDLE_VALID_SHIFT)
+#endif
+
+/* @summary Retrieve the generation value associated with a handle chunk state value.
+ * @param _state The state value to query.
+ */
+#ifndef PAL__HandleStateGetGeneration
+#define PAL__HandleStateGetGeneration(_state)                                  \
+    (((_state) & PAL_HANDLE_GENER_MASK_PACKED) >> PAL_HANDLE_GENER_SHIFT)
+#endif
+
+/* @summary Retrieve the dense index associated with a handle chunk state value.
+ * @param _state The state value to query.
+ * @return The dense data index value bound to the state slot.
+ */
+#ifndef PAL__HandleStateGetDenseIndex
+#define PAL__HandleStateGetDenseIndex(_state)                                  \
+    (((_state) & PAL_HANDLE_INDEX_MASK_PACKED) >> PAL_HANDLE_INDEX_SHIFT)
+#endif
+
+/* @summary Retrieve the liveness status of a handle value.
+ * @param _handle The handle to query.
+ * @return Non-zero if the handle has its valid bit set.
+ */
+#ifndef PAL__HandleValueGetLive
+#define PAL__HandleValueGetLive(_handle)                                       \
+    (((_handle) & PAL_HANDLE_VALID_MASK_PACKED) >> PAL_HANDLE_VALID_SHIFT)
+#endif
+
+/* @summary Retrieve the namespace or type value from a handle.
+ * @param _handle The handle to query.
+ */
+#ifndef PAL__HandleValueGetNamespace
+#define PAL__HandleValueGetNamespace(_handle)                                  \
+    (((_handle) & PAL_HANDLE_NAMES_MASK_PACKED) >> PAL_HANDLE_NAMES_SHIFT)
+#endif
+
+/* @summary Retrieve the generation value from a handle.
+ * @param _handle The handle to query.
+ */
+#ifndef PAL__HandleValueGetGeneration
+#define PAL__HandleValueGetGeneration(_handle)                                 \
+    (((_handle) & PAL_HANDLE_GENER_MASK_PACKED) >> PAL_HANDLE_GENER_SHIFT)
+#endif
+
+/* @summary Retrieve the chunk index value from a handle.
+ * @param _handle The handle to query.
+ */
+#ifndef PAL__HandleValueGetChunkIndex
+#define PAL__HandleValueGetChunkIndex(_handle)                                 \
+    (((_handle) & PAL_HANDLE_CHUNK_MASK_PACKED) >> PAL_HANDLE_CHUNK_SHIFT)
+#endif
+
+/* @summary Retrieve the state value index from a handle.
+ * @param _handle The handle to query.
+ */
+#ifndef PAL__HandleValueGetStateIndex
+#define PAL__HandleValueGetStateIndex(_handle)                                 \
+    (((_handle) & PAL_HANDLE_INDEX_MASK_PACKED) >> PAL_HANDLE_INDEX_SHIFT)
+#endif
+
+/* @summary Construct a handle value by packing all components together.
+ * @param _chunk The zero-based chunk index in [0, 1024).
+ * @param _state The zero-based state index in [0, 1024).
+ * @param _names The namespace value associated with the table.
+ * @param _gener The generation value for the dense index.
+ * @return A 32-bit unsigned integer value representing the handle.
+ */
+#ifndef PAL__HandleValuePack
+#define PAL__HandleValuePack(_chunk, _state, _names, _gener)                   \
+    (((PAL_HANDLE_VALID_MASK_PACKED))     |                                    \
+     ((_chunk) << PAL_HANDLE_CHUNK_SHIFT) |                                    \
+     ((_state) << PAL_HANDLE_INDEX_SHIFT) |                                    \
+     ((_names) << PAL_HANDLE_NAMES_SHIFT) |                                    \
+     ((_gener) << PAL_HANDLE_GENER_SHIFT))
+#endif
 
 /* @summary Forward-declare the types exported by this module.
  * The type definitions are included in the platform-specific header.
  */
 struct  PAL_MEMORY_BLOCK;
+struct  PAL_MEMORY_BLOCK_INFO;
+struct  PAL_MEMORY_INDEX_SIZE;
 struct  PAL_MEMORY_ARENA;
 struct  PAL_MEMORY_ARENA_INIT;
 struct  PAL_MEMORY_ARENA_MARKER;
@@ -95,35 +437,39 @@ typedef int  (*PAL_HandleTableChunkVisitor_Func)
     pal_uintptr_t                context
 );
 
+/* @summary Define the allowed values for memory allocator type. An allocator can manage either host or device memory.
+ */
+typedef enum PAL_MEMORY_ALLOCATOR_TYPE {
+    PAL_MEMORY_ALLOCATOR_TYPE_INVALID                  =  0,   /* This value is invalid and should not be used. */
+    PAL_MEMORY_ALLOCATOR_TYPE_HOST                     =  1,   /* The allocator is a host memory allocator. */
+    PAL_MEMORY_ALLOCATOR_TYPE_DEVICE                   =  2,   /* The allocator is a device memory allocator. */
+} PAL_MEMORY_ALLOCATOR_TYPE;
+
+/* @summary Define various flags that can be bitwise OR'd to control the allocation attributes for a single host memory allocation.
+ */
+typedef enum PAL_HOST_MEMORY_ALLOCATION_FLAGS {
+    PAL_HOST_MEMORY_ALLOCATION_FLAGS_DEFAULT   = (0UL <<  0),  /* The memory can be read and written by the host, and ends with a guard page. */
+    PAL_HOST_MEMORY_ALLOCATION_FLAG_READ       = (1UL <<  0),  /* The memory can be read by the host. */
+    PAL_HOST_MEMORY_ALLOCATION_FLAG_WRITE      = (1UL <<  1),  /* The memory can be written by the host. */
+    PAL_HOST_MEMORY_ALLOCATION_FLAG_EXECUTE    = (1UL <<  2),  /* The allocation can contain code that can be executed by the host. */
+    PAL_HOST_MEMORY_ALLOCATION_FLAG_NOGUARD    = (1UL <<  3),  /* The allocation will not end with a guard page. */
+    PAL_HOST_MEMORY_ALLOCATION_FLAGS_READWRITE =               /* The committed memory can be read and written by the host. */
+        PAL_HOST_MEMORY_ALLOCATION_FLAG_READ   | 
+        PAL_HOST_MEMORY_ALLOCATION_FLAG_WRITE
+} PAL_HOST_MEMORY_ALLOCATION_FLAGS;
+
+/* @summary Define the various flags that can be specified when creating a PAL_HANDLE_TABLE.
+ * These values can be bitwise-ORd in the PAL_HANDLE_TABLE_INIT::TableFlags field.
+ */
+typedef enum PAL_HANDLE_TABLE_FLAGS {
+    PAL_HANDLE_TABLE_FLAGS_NONE                = (0UL <<  0),  /* No flags are specified for the handle table. */
+    PAL_HANDLE_TABLE_FLAG_IDENTITY             = (1UL <<  0),  /* The PAL_HANDLE_TABLE can create and delete object IDs. */
+    PAL_HANDLE_TABLE_FLAG_STORAGE              = (1UL <<  1),  /* The PAL_HANDLE_TABLE can store data internally. */
+} PAL_HANDLE_TABLE_FLAGS;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* @summary Scan a 64-bit machine word, starting from least-significant to most-significant bit, for the first set bit.
- * @param value The 64-bit value to search.
- * @param bit If the value contains a set bit, the zero-based index of the bit is stored at this location.
- * @return Non-zero if a set bit is found in the value, or zero of no set bit is found.
- * MSVC: _BitScanForward64. GCC: __builtin_ffs (different semantics).
- */
-PAL_API(int)
-PAL_BitScan_ui64_lsb
-(
-    pal_uint64_t value, 
-    pal_uint32_t  *bit
-);
-
-/* @summary Scan a 64-bit machine word, starting from most-significant to least-significant bit, for the first set bit.
- * @param value The 64-bit value to search.
- * @param bit If the value contains a set bit, the zero-based index of the bit is stored at this location.
- * @return Non-zero if a set bit is found in the value, or zero of no set bit is found.
- * MSVC: _BitScanReverse64. GCC: __builtin_ffs (different semantics).
- */
-PAL_API(int)
-PAL_BitScan_ui64_msb
-(
-    pal_uint64_t value, 
-    pal_uint32_t  *bit
-);
 
 /* @summary Mix the bits in a 32-bit value.
  * @param input The input value.

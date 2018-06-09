@@ -60,6 +60,24 @@ typedef struct PAL_MEMORY_BLOCK {
     pal_uint32_t                       AllocationTag;          /* Reserved for future use. Set to Zero. */
 } PAL_MEMORY_BLOCK;
 
+/* @summary Define the data returned from a memory allocator index size query.
+ */
+typedef struct PAL_MEMORY_INDEX_SIZE {
+    pal_uint64_t                       SplitIndexSize;         /* The size of the split index data, in bytes. This value is always an even multiple of the machine word size. */
+    pal_uint64_t                       StatusIndexSize;        /* The size of the status index data, in bytes. This value is always an even multiple of the machine word size. */
+    pal_uint64_t                       TotalIndexSize;         /* The total required size for all index data, in bytes. This value is always an even multiple of the machine word size. */
+    pal_uint32_t                       MinBitIndex;            /* The zero-based index of the set bit corresponding to the minimum allocation size. */
+    pal_uint32_t                       MaxBitIndex;            /* The zero-based index of the set bit corresponding to the maximum allocation size. */
+    pal_uint32_t                       LevelCount;             /* The number of powers of two between the minimum and maximum allocation size. */
+} PAL_MEMORY_INDEX_SIZE;
+
+/* @summary Define the data returned from a memory allocator free block query. */
+typedef struct PAL_MEMORY_BLOCK_INFO {
+    pal_uint64_t                       BlockOffset;            /* The byte offset of the start of the block from the start of the managed memory range. */
+    pal_uint32_t                       LevelShift;             /* The zero-based index of the set bit for the level. BlockSize = 1 << LevelShift, RelativeIndex = BlockOffset >> LevelShift. */
+    pal_uint32_t                       BlockIndex;             /* The absolute block index. The relative index can be computed as BlockOffset / BlockSize. */
+} PAL_MEMORY_BLOCK_INFO;
+
 /* @summary Define the data associated with a memory arena allocator.
  * An arena allocator can manage any amount of memory, but supports only allocation and freeing back to a marked point in time.
  * PAL implementations can allocate a memory block using the native platform allocator, and then sub-allocate using an arena allocator.
@@ -186,5 +204,100 @@ typedef struct PAL_MEMORY_LAYOUT {
     pal_uint32_t                       StreamSize [8];         /* The size of each data element, in bytes, for each stream. Use PAL_SizeOf(type) to set these values. */
     pal_uint32_t                       StreamAlign[8];         /* The required alignment of each data element, in bytes, for each stream. Use PAL_AlignOf(type) to set these values. */
 } PAL_MEMORY_LAYOUT;
+
+/* @summary Define the data associated with a dynamic buffer.
+ */
+typedef struct PAL_DYNAMIC_BUFFER {
+    pal_uint8_t                       *BaseAddress;            /* The base address of the memory reservation. */
+    pal_uint8_t                       *EndAddress;             /* The address of the one-past last element in the buffer. */
+    pal_usize_t                        ElementCount;           /* The number of elements that are currently stored in the buffer. */
+    pal_usize_t                        ElementCapacity;        /* The number of elements that can be stored in the buffer without increasing the commitment. */
+    pal_usize_t                        ElementCountMax;        /* The maximum number of elements that can be stored in the current memory reservation. */
+    pal_uint32_t                       ElementCountGrow;       /* The minimum number of elements that the buffer will grow to accomodate during a PAL_DynamicBufferEnsure operation. */
+    pal_uint32_t                       ElementAlignment;       /* The required alignment of an individual element, in bytes. */
+    pal_uint32_t                       ElementBaseSize;        /* The size of a single element, in bytes. */
+    pal_uint32_t                       ElementStride;          /* The number of bytes between two consecutive elements in the buffer. */
+    pal_uint32_t                       OsPageSize;             /* The size of the OS virtual memory manager page, in bytes. */
+    pal_uint32_t                       OsGranularity;          /* The allocation granularity (alignment) of allocations made through the OS virtual memory manager, in bytes. */
+} PAL_DYNAMIC_BUFFER;
+
+/* @summary Define the data used to configure a dynamic buffer.
+ */
+typedef struct PAL_DYNAMIC_BUFFER_INIT {
+    pal_uint32_t                       ElementSize;            /* The size of a single element, in bytes. Use PAL_SizeOf(type) to retrieve the size of the type. */
+    pal_uint32_t                       ElementAlign;           /* The required alignment of individual elements, in bytes. Use PAL_AlignOf(type) to retrieve the necessary alignment. */
+    pal_uint32_t                       InitialCommitment;      /* The number of bytes to commit when the buffer is first created. Use PAL_AllocationSizeArray(type, count) to set this field. */
+    pal_uint32_t                       MinCommitIncrease;      /* The minimum number of bytes that the memory commitment can increase by during a single PAL_DynamicBufferEnsure operation. */
+    pal_uint64_t                       MaxTotalCommitment;     /* The maximum number of bytes of process address space that can be committed for the buffer. This specifies the allocation reservation size. */
+} PAL_DYNAMIC_BUFFER_INIT;
+
+/* @summary Define the data associated with a handle state value.
+ * The handle state is a sparse array. The handle value stores the index into this array, which is in turn used to look up the index in the dense array.
+ */
+typedef struct PAL_HANDLE_STATE_BITS {
+    pal_uint32_t                       Generation :  4;        /* The generation value, used to detect expired handles that reuse the same slot. */
+    pal_uint32_t                       DenseIndex : 10;        /* The zero-based index of the item in the dense storage array. */
+    pal_uint32_t                       Unused     : 17;        /* These bits are currently unused. */
+    pal_uint32_t                       Live       :  1;        /* This bit is set if the entry is associated with a valid handle. */
+} PAL_HANDLE_STATE_BITS;
+
+/* @summary Define the data associated with a handle value.
+ * The handle array (and any associated data) is stored tightly-packed. The unused portion of the array maintains a list of available indices in the sparse state array.
+ */
+typedef struct PAL_HANDLE_VALUE_BITS {
+    pal_uint32_t                       Generation :  4;        /* The generation value, used to detect expired handles that reuse the same slot. */
+    pal_uint32_t                       Namespace  :  7;        /* An application-defined value used to specify a namespace or type. */
+    pal_uint32_t                       StateIndex : 10;        /* The zero-based index of the item in the sparse state array. */
+    pal_uint32_t                       ChunkIndex : 10;        /* The zero-based index of the chunk that stores the item data. */
+    pal_uint32_t                       Valid      :  1;        /* This bit is clear for invalid handle values. */
+} PAL_HANDLE_VALUE_BITS;
+
+/* @summary Define the data associated with a table of "objects" identified externally using a 32-bit integer ID.
+ * The object can exist in name only (i.e. it is only a handle) or it can have some data stored in the table directly.
+ * The table itself is broken up into independent "chunks", which allows the table to grow as-needed up to the maximum size.
+ * A chunk is independent of all other chunks. The PAL_HANDLE and data within a chunk are densely-packed, allowing for efficient iteration over the items within a chunk.
+ * Access to the table must be externally synchronized.
+ */
+typedef struct PAL_HANDLE_TABLE {
+    pal_uint8_t                       *BaseAddress;            /* The address of the memory block returned by the virtual memory manager. */
+    pal_uint64_t                      *ChunkCommit;            /* A bitvector of 1024 bits (128 bytes) where a set bit at index N (0 <= N < 1024) indicates that chunk N is committed with backing physical memory. */
+    pal_uint64_t                      *ChunkStatus;            /* A bitvector of 1024 bits (128 bytes) where a set bit at index N (0 <= N < 1024) indicates that chunk N has at least one available slot. */
+    pal_uint16_t                      *ChunkCounts;            /* An array of 1024 16-bit integers storing the number of used slots for each chunk. */
+    pal_uint32_t                      *ChunkInit;              /* An array of 1024 32-bit integer values used to initialize a chunk free list. */
+    pal_uint32_t                       ChunkSize;              /* The size of a single committed chunk, in bytes. */
+    pal_uint32_t                       DataSize;               /* The size of a single data element, in bytes. */
+    pal_uint32_t                       CommitCount;            /* The number of currently committed chunks. */
+    pal_uint32_t                       Namespace;              /* The namespace or "object type" value for handles allocated by the table. */
+    pal_uint32_t                       TableFlags;             /* One or more values of the PAL_HANDLE_TABLE_FLAGS enumeration. */
+    pal_uint32_t                       OsPageSize;             /* The size of the OS virtual memory manager page, in bytes. */
+    PAL_MEMORY_LAYOUT                  DataLayout;             /* The layout of the data elements stored within the table. */
+} PAL_HANDLE_TABLE;
+
+/* @summary Define the data used to configure a PAL_HANDLE_TABLE.
+ */
+typedef struct PAL_HANDLE_TABLE_INIT {
+    pal_uint32_t                       Namespace;              /* The namespace or "object type" value for handles allocated by the table. */
+    pal_uint32_t                       InitialCommit;          /* The number of objects to initially allocate memory for. If Flags specifies PAL_HANDLE_TABLE_FLAG_PREALLOCATE, TableCapacity is committed up-front. */
+    pal_uint32_t                       TableFlags;             /* One or more bitwise-ORd values of the PAL_HANDLE_TABLE_FLAGS enumeration. */
+    struct PAL_MEMORY_LAYOUT          *DataLayout;             /* Pointer to a PAL_MEMORY_LAYOUT specifying the layout for data items stored within the table. Set to NULL if the table does not store any data internally. */
+} PAL_HANDLE_TABLE_INIT;
+
+/* @summary Define the data describing an independent chunk of objects within a handle table.
+ * The actual in-memory layout is different from the layout described by this structure, and the chunk object data (pointed to by the Data field) is treated as opaque.
+ */
+typedef struct PAL_HANDLE_TABLE_CHUNK {
+    PAL_HANDLE                        *IdList;                 /* A pointer to the start of the 1024-element (Count are in use) handle array for the chunk. */
+    pal_uint8_t                       *Data;                   /* A pointer to the start of the data array for the chunk, or NULL of the table does not contain internal data. */
+    pal_uint32_t                       Index;                  /* The zero-based index of the chunk within the table. This is always in [0, 1024). */
+    pal_uint32_t                       Count;                  /* The number of valid items in the chunk. This is always in [0, 1024]. */
+} PAL_HANDLE_TABLE_CHUNK;
+
+/* @summary Define the data used to configure an operation that invoked a caller-supplied function for each non-empty chunk in a PAL_HANDLE_TABLE.
+ */
+typedef struct PAL_HANDLE_TABLE_VISITOR_INIT {
+    PAL_HandleTableChunkVisitor_Func   Callback;               /* The callback function to invoke for each non-empty chunk in the table. */
+    pal_uintptr_t                      Context;                /* Opaque data to be passed through to each invocation of the Callback. */
+    pal_uint32_t                       Flags;                  /* One or more bitwise OR'd values of the PAL_HANDLE_TABLE_VISITOR_FLAGS enumeration. */
+} PAL_HANDLE_TABLE_VISITOR_INIT;
 
 #endif /* __PAL_WIN32_MEMORY_H__ */
