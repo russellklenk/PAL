@@ -27,6 +27,24 @@ struct  PAL_SPMC_QUEUE_INIT;
 struct  PAL_MPMC_QUEUE_U32;
 struct  PAL_MPMC_QUEUE_INIT;
 
+/* @summary Define various flags that can be bitwise OR'd to control the behavior of an SPSC concurrent queue.
+ */
+typedef enum PAL_SPSC_QUEUE_USAGE_FLAGS {
+    PAL_SPSC_QUEUE_USAGE_FLAGS_NONE            = (0UL <<  0),  /* No special usage flags are specified. */
+} PAL_SPSC_QUEUE_USAGE_FLAGS;
+
+/* @summary Define various flags that can be bitwise OR'd to control the behavior of an SPMC concurrent queue.
+ */
+typedef enum PAL_SPMC_QUEUE_USAGE_FLAGS {
+    PAL_SPMC_QUEUE_USAGE_FLAGS_NONE            = (0UL <<  0),  /* No special usage flags are specified. */
+} PAL_SPMC_QUEUE_USAGE_FLAGS;
+
+/* @summary Define various flags that can be bitwise OR'd to control the behavior of an MPMC concurrent queue.
+ */
+typedef enum PAL_MPMC_QUEUE_USAGE_FLAGS {
+    PAL_MPMC_QUEUE_USAGE_FLAGS_NONE            = (0UL <<  0),  /* No special usage flags are specified. */
+} PAL_MPMC_QUEUE_USAGE_FLAGS;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
