@@ -2,6 +2,7 @@
  * @summary Implement the PAL entry points from pal_thread.h.
  */
 #include "pal_win32_thread.h"
+#include "pal_win32_memory.h"
 
 /* @summary Determine whether a given value is a power of two or not.
  * @param _value The value to check.
@@ -185,7 +186,7 @@ PAL_CpuInfoQuery
     DWORD                            buffer_size = 0;
     int                                  regs[4] ={0, 0, 0, 0};
 
-    ZeroMemory(cpu_info, sizeof(PAL_CPU_INFO));
+    PAL_ZeroMemory(cpu_info, sizeof(PAL_CPU_INFO));
 
 #if PAL_TARGET_ARCHITECTURE == PAL_ARCHITECTURE_X64
     /* retrieve the CPU vendor string using the __cpuid intrinsic */
@@ -213,7 +214,7 @@ PAL_CpuInfoQuery
     GetLogicalProcessorInformation(NULL, &buffer_size);
     if ((lpibuf = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION*) HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, buffer_size)) == NULL)
     {   /* failed to allocate the required amount of memory */
-        ZeroMemory(cpu_info, sizeof(PAL_CPU_INFO));
+        PAL_ZeroMemory(cpu_info, sizeof(PAL_CPU_INFO));
         return -1;
     }
     if (GetLogicalProcessorInformation(lpibuf, &buffer_size))
@@ -256,7 +257,7 @@ PAL_CpuInfoQuery
     }
     else
     {   /* the call to GetLogicalProcessorInformation failed */
-        ZeroMemory(cpu_info, sizeof(PAL_CPU_INFO));
+        PAL_ZeroMemory(cpu_info, sizeof(PAL_CPU_INFO));
         HeapFree(GetProcessHeap(), 0, lpibuf);
         return -1;
     }
@@ -666,25 +667,25 @@ PAL_SPSCQueueCreate_u32
 
     if (init->Capacity < 2)
     {   assert(init->Capacity >= 2);
-        ZeroMemory(spsc_queue, sizeof(PAL_SPSC_QUEUE_U32));
+        PAL_ZeroMemory(spsc_queue, sizeof(PAL_SPSC_QUEUE_U32));
         return -1;
     }
     if (PAL__IsPowerOfTwo(init->Capacity) == 0)
     {   assert(PAL__IsPowerOfTwo(init->Capacity));
-        ZeroMemory(spsc_queue, sizeof(PAL_SPSC_QUEUE_U32));
+        PAL_ZeroMemory(spsc_queue, sizeof(PAL_SPSC_QUEUE_U32));
         return -1;
     }
     if (init->MemoryStart == NULL || init->MemorySize < (3 * sizeof(pal_uint32_t)))
     {   assert(init->MemoryStart != NULL);
         assert(init->MemorySize  >=(3 * sizeof(pal_uint32_t)));
-        ZeroMemory(spsc_queue, sizeof(PAL_SPSC_QUEUE_U32));
+        PAL_ZeroMemory(spsc_queue, sizeof(PAL_SPSC_QUEUE_U32));
         return -1;
     }
 
     bytes_required = PAL_SPSCQueueQueryMemorySize_u32(init->Capacity);
     if (init->MemorySize < bytes_required)
     {   assert(init->MemorySize >= bytes_required);
-        ZeroMemory(spsc_queue, sizeof(PAL_SPSC_QUEUE_U32));
+        PAL_ZeroMemory(spsc_queue, sizeof(PAL_SPSC_QUEUE_U32));
         return -1;
     }
 
@@ -763,24 +764,24 @@ PAL_SPMCQueueCreate_u32
 
     if (init->Capacity < 2)
     {   assert(init->Capacity >= 2);
-        ZeroMemory(spmc_queue, sizeof(PAL_SPMC_QUEUE_U32));
+        PAL_ZeroMemory(spmc_queue, sizeof(PAL_SPMC_QUEUE_U32));
         return -1;
     }
     if (PAL__IsPowerOfTwo(init->Capacity) == 0)
     {   assert(PAL__IsPowerOfTwo(init->Capacity));
-        ZeroMemory(spmc_queue, sizeof(PAL_SPMC_QUEUE_U32));
+        PAL_ZeroMemory(spmc_queue, sizeof(PAL_SPMC_QUEUE_U32));
         return -1;
     }
     if (init->MemoryStart == NULL)
     {   assert(init->MemoryStart != NULL);
-        ZeroMemory(spmc_queue, sizeof(PAL_SPMC_QUEUE_U32));
+        PAL_ZeroMemory(spmc_queue, sizeof(PAL_SPMC_QUEUE_U32));
         return -1;
     }
 
     bytes_required = PAL_SPMCQueueQueryMemorySize_u32(init->Capacity);
     if (init->MemorySize < bytes_required)
     {   assert(init->MemorySize >= bytes_required);
-        ZeroMemory(spmc_queue, sizeof(PAL_SPMC_QUEUE_U32));
+        PAL_ZeroMemory(spmc_queue, sizeof(PAL_SPMC_QUEUE_U32));
         return -1;
     }
 
@@ -894,24 +895,24 @@ PAL_MPMCQueueCreate_u32
 
     if (init->Capacity < 2)
     {   assert(init->Capacity >= 2);
-        ZeroMemory(mpmc_queue, sizeof(PAL_MPMC_QUEUE_U32));
+        PAL_ZeroMemory(mpmc_queue, sizeof(PAL_MPMC_QUEUE_U32));
         return -1;
     }
     if (PAL__IsPowerOfTwo(init->Capacity) == 0)
     {   assert(PAL__IsPowerOfTwo(init->Capacity));
-        ZeroMemory(mpmc_queue, sizeof(PAL_MPMC_QUEUE_U32));
+        PAL_ZeroMemory(mpmc_queue, sizeof(PAL_MPMC_QUEUE_U32));
         return -1;
     }
     if (init->MemoryStart == NULL)
     {   assert(init->MemoryStart != NULL);
-        ZeroMemory(mpmc_queue, sizeof(PAL_MPMC_QUEUE_U32));
+        PAL_ZeroMemory(mpmc_queue, sizeof(PAL_MPMC_QUEUE_U32));
         return -1;
     }
 
     bytes_required = PAL_MPMCQueueQueryMemorySize_u32(init->Capacity);
     if (init->MemorySize < bytes_required)
     {   assert(init->MemorySize >= bytes_required);
-        ZeroMemory(mpmc_queue, sizeof(PAL_MPMC_QUEUE_U32));
+        PAL_ZeroMemory(mpmc_queue, sizeof(PAL_MPMC_QUEUE_U32));
         return -1;
     }
 
