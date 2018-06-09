@@ -31,8 +31,8 @@ struct  PAL_FILE_FLUSH_DATA;
 struct  PAL_FILE_FLUSH_RESULT;
 struct  PAL_FILE_CLOSE_DATA;
 struct  PAL_FILE_CLOSE_RESULT;
+struct  PAL_TASK_ARGS;
 
-#if 0
 /* @summary Define the signature for the callback function invoked when a file stat task has completed.
  * @param args A PAL_TASK_ARGS instance specifying data associated with the task and data used to spawn additional tasks.
  * @param result Information returned by the operation.
@@ -102,7 +102,6 @@ typedef void (*PAL_FileClose_Func)
     struct PAL_TASK_ARGS           *args, 
     struct PAL_FILE_CLOSE_RESULT *result
 );
-#endif /* DISABLED */
 
 /* @summary Define the signature for the callback function invoked when a file or directory is encountered during filesystem enumeration.
  * @param fsenum The PAL_FILE_ENUMERATOR performing the enumeration and invoking the callback.
@@ -122,6 +121,46 @@ typedef int  (*PAL_FileEnum_Func)
     struct PAL_FILE_INFO   *entry_info, 
     pal_uintptr_t              context
 );
+
+/* @summary Define various flags that can be bitwise OR'd to control the behavior of a filesystem enumerator.
+ */
+typedef enum PAL_FILE_ENUMERATOR_FLAGS {
+    PAL_FILE_ENUMERATOR_FLAGS_NONE             = (0UL <<  0),  /* Do not recurse or report any files or directories. */
+    PAL_FILE_ENUMERATOR_FLAG_FILES             = (1UL <<  0),  /* Report regular file entries during enumeration. */
+    PAL_FILE_ENUMERATOR_FLAG_DIRECTORIES       = (1UL <<  1),  /* Report directory entries during enumeration. */
+    PAL_FILE_ENUMERATOR_FLAG_RECURSIVE         = (1UL <<  2),  /* Recurse into subdirectories. */
+} PAL_FILE_ENUMERATOR_FLAGS;
+
+/* @summary Define hint flags that can be used to optimize asynchronous I/O operations.
+ */
+typedef enum PAL_FILE_OPEN_HINT_FLAGS {
+    PAL_FILE_OPEN_HINT_FLAGS_NONE              = (0UL <<  0),  /* No I/O hints are specified. Use the default behavior appropriate for the operation. */
+    PAL_FILE_OPEN_HINT_FLAG_READ               = (1UL <<  0),  /* Read operations will be issued against the file. */
+    PAL_FILE_OPEN_HINT_FLAG_WRITE              = (1UL <<  1),  /* Write operations will be issued against the file. */
+    PAL_FILE_OPEN_HINT_FLAG_OVERWRITE          = (1UL <<  2),  /* The existing file contents should be discarded. */
+    PAL_FILE_OPEN_HINT_FLAG_PREALLOCATE        = (1UL <<  3),  /* Preallocate the file to the specified size. */
+    PAL_FILE_OPEN_HINT_FLAG_SEQUENTIAL         = (1UL <<  4),  /* Optimize for sequential file access when performing cached/buffered I/O. */
+    PAL_FILE_OPEN_HINT_FLAG_UNCACHED           = (1UL <<  5),  /* File I/O should bypass the operating system page cache. The source/destination buffer must be aligned to a sector boundary and have a size that's an even multiple of the disk sector size. */
+    PAL_FILE_OPEN_HINT_FLAG_WRITE_THROUGH      = (1UL <<  6),  /* Writes should be immediately flushed to disk. */
+    PAL_FILE_OPEN_HINT_FLAG_TEMPORARY          = (1UL <<  7),  /* The file is temporary, and will be deleted when the file handle is closed. */
+    PAL_FILE_OPEN_HINT_FLAG_ASYNCHRONOUS       = (1UL <<  8),  /* The file should support asynchronous I/O operations. */
+} PAL_FILE_OPEN_HINT_FLAGS;
+
+/* @summary Define the various flags that can be associated with a parsed path string.
+ * These values can be bitwise-ORd in the PAL_PATH_PARTS::Flags field.
+ */
+typedef enum PAL_PATH_FLAGS {
+    PAL_PATH_FLAGS_INVALID                     = (0UL <<  0),  /* No flags are specified for the path, or the path cannot be parsed. */
+    PAL_PATH_FLAG_ABSOLUTE                     = (1UL <<  0),  /* The path string specifies an absolute path. */
+    PAL_PATH_FLAG_RELATIVE                     = (1UL <<  1),  /* The path string specifies a relative path. */
+    PAL_PATH_FLAG_NETWORK                      = (1UL <<  2),  /* The path string specifies a path in UNC format. */
+    PAL_PATH_FLAG_DEVICE                       = (1UL <<  3),  /* The path string specifies a device path. */
+    PAL_PATH_FLAG_LONG                         = (1UL <<  4),  /* The path string specifies a long-form path, with a maximum length of 32767 characters, not including the nul. */
+    PAL_PATH_FLAG_ROOT                         = (1UL <<  5),  /* The path string has a root component. */
+    PAL_PATH_FLAG_PATH                         = (1UL <<  6),  /* The path string has a directory component. */
+    PAL_PATH_FLAG_FILENAME                     = (1UL <<  7),  /* The path string has a filename component. */
+    PAL_PATH_FLAG_EXTENSION                    = (1UL <<  8),  /* The path string has a file extension component. */
+} PAL_PATH_FLAGS;
 
 #ifdef __cplusplus
 extern "C" {
