@@ -8,8 +8,8 @@
  * @param _value The value to check.
  * @return Non-zero if the value is a power-of-two, or zero otherwise.
  */
-#ifndef PAL__IsPowerOfTwo
-#define PAL__IsPowerOfTwo(_value)                                              \
+#ifndef PAL_IsPowerOfTwo
+#define PAL_IsPowerOfTwo(_value)                                              \
     (((_value) & ((_value)-1)) == 0)
 #endif
 
@@ -54,7 +54,7 @@ typedef struct PAL_MPMC_CELL_U32 {
  * @return Zero if the two strings match. A positive value if the first non-matching character in str_a > the corresponding character in str_b. A negative value if the first non-matching character str_a < the corresponding character in str_b.
  */
 static int
-PAL__StringCompare
+PAL_StringCompare
 (
     char const *str_a, 
     char const *str_b
@@ -75,7 +75,7 @@ PAL__StringCompare
  * @return The number of bits set in the mask.
  */
 static pal_uint32_t
-PAL__CountSetBitsInProcessorMask
+PAL_CountSetBitsInProcessorMask
 (
     ULONG_PTR processor_mask
 )
@@ -97,7 +97,7 @@ PAL__CountSetBitsInProcessorMask
  * @return 1 if a resource was claimed, or 0 if no resources are available.
  */
 static PAL_INLINE int
-PAL__SemaphoreTryWait
+PAL_SemaphoreTryWait
 (
     struct PAL_SEMAPHORE *sem
 )
@@ -123,7 +123,7 @@ PAL__SemaphoreTryWait
  * @param sem The PAL_SEMAPHORE protecting the resource.
  */
 static PAL_INLINE void
-PAL__SemaphoreWaitNoSpin
+PAL_SemaphoreWaitNoSpin
 (
     struct PAL_SEMAPHORE *sem
 )
@@ -194,14 +194,14 @@ PAL_CpuInfoQuery
     *((int*) &cpu_info->VendorName[0]) = regs[1];
     *((int*) &cpu_info->VendorName[4]) = regs[3];
     *((int*) &cpu_info->VendorName[8]) = regs[2];
-         if (!PAL__StringCompare(cpu_info->VendorName, "AuthenticAMD")) cpu_info->PreferAMD        = 1;
-    else if (!PAL__StringCompare(cpu_info->VendorName, "GenuineIntel")) cpu_info->PreferIntel      = 1;
-    else if (!PAL__StringCompare(cpu_info->VendorName, "KVMKVMKVMKVM")) cpu_info->IsVirtualMachine = 1;
-    else if (!PAL__StringCompare(cpu_info->VendorName, "Microsoft Hv")) cpu_info->IsVirtualMachine = 1;
-    else if (!PAL__StringCompare(cpu_info->VendorName, "VMwareVMware")) cpu_info->IsVirtualMachine = 1;
-    else if (!PAL__StringCompare(cpu_info->VendorName, "XenVMMXenVMM")) cpu_info->IsVirtualMachine = 1;
-    else if (!PAL__StringCompare(cpu_info->VendorName, " lrpepyh vr" )) cpu_info->IsVirtualMachine = 1;
-    else if (!PAL__StringCompare(cpu_info->VendorName, "bhyve bhyve" )) cpu_info->IsVirtualMachine = 1;
+         if (!PAL_StringCompare(cpu_info->VendorName, "AuthenticAMD")) cpu_info->PreferAMD        = 1;
+    else if (!PAL_StringCompare(cpu_info->VendorName, "GenuineIntel")) cpu_info->PreferIntel      = 1;
+    else if (!PAL_StringCompare(cpu_info->VendorName, "KVMKVMKVMKVM")) cpu_info->IsVirtualMachine = 1;
+    else if (!PAL_StringCompare(cpu_info->VendorName, "Microsoft Hv")) cpu_info->IsVirtualMachine = 1;
+    else if (!PAL_StringCompare(cpu_info->VendorName, "VMwareVMware")) cpu_info->IsVirtualMachine = 1;
+    else if (!PAL_StringCompare(cpu_info->VendorName, "XenVMMXenVMM")) cpu_info->IsVirtualMachine = 1;
+    else if (!PAL_StringCompare(cpu_info->VendorName, " lrpepyh vr" )) cpu_info->IsVirtualMachine = 1;
+    else if (!PAL_StringCompare(cpu_info->VendorName, "bhyve bhyve" )) cpu_info->IsVirtualMachine = 1;
 #else
     /* non-x86/x64 such as ARM or PPC - CPUID is not available */
     UNREFERENCED_PARAMETER(regs);
@@ -224,7 +224,7 @@ PAL_CpuInfoQuery
             switch (lpibuf[i].Relationship)
             {
                 case RelationProcessorCore:
-                    { num_threads = PAL__CountSetBitsInProcessorMask(lpibuf[i].ProcessorMask);
+                    { num_threads = PAL_CountSetBitsInProcessorMask(lpibuf[i].ProcessorMask);
                       cpu_info->HardwareThreads += num_threads;
                       cpu_info->ThreadsPerCore = num_threads;
                       cpu_info->PhysicalCores++;
@@ -311,11 +311,11 @@ PAL_SemaphoreWait
     pal_uint32_t spin_count = sem->SpinCount;
     while (spin_count > 0)
     {
-        if (PAL__SemaphoreTryWait(sem))
+        if (PAL_SemaphoreTryWait(sem))
             return;
         --spin_count;
     }
-    PAL__SemaphoreWaitNoSpin(sem);
+    PAL_SemaphoreWaitNoSpin(sem);
 }
 
 PAL_API(void)
@@ -652,7 +652,7 @@ PAL_SPSCQueueQueryMemorySize_u32
     pal_uint32_t capacity
 )
 {   assert(capacity >= 2);
-    assert(PAL__IsPowerOfTwo(capacity));
+    assert(PAL_IsPowerOfTwo(capacity));
     return((capacity + 1) * sizeof(pal_uint32_t));
 }
 
@@ -670,8 +670,8 @@ PAL_SPSCQueueCreate_u32
         PAL_ZeroMemory(spsc_queue, sizeof(PAL_SPSC_QUEUE_U32));
         return -1;
     }
-    if (PAL__IsPowerOfTwo(init->Capacity) == 0)
-    {   assert(PAL__IsPowerOfTwo(init->Capacity));
+    if (PAL_IsPowerOfTwo(init->Capacity) == 0)
+    {   assert(PAL_IsPowerOfTwo(init->Capacity));
         PAL_ZeroMemory(spsc_queue, sizeof(PAL_SPSC_QUEUE_U32));
         return -1;
     }
@@ -749,7 +749,7 @@ PAL_SPMCQueueQueryMemorySize_u32
     pal_uint32_t capacity
 )
 {   assert(capacity >= 2);
-    assert(PAL__IsPowerOfTwo(capacity));
+    assert(PAL_IsPowerOfTwo(capacity));
     return(capacity * sizeof(pal_uint32_t));
 }
 
@@ -767,8 +767,8 @@ PAL_SPMCQueueCreate_u32
         PAL_ZeroMemory(spmc_queue, sizeof(PAL_SPMC_QUEUE_U32));
         return -1;
     }
-    if (PAL__IsPowerOfTwo(init->Capacity) == 0)
-    {   assert(PAL__IsPowerOfTwo(init->Capacity));
+    if (PAL_IsPowerOfTwo(init->Capacity) == 0)
+    {   assert(PAL_IsPowerOfTwo(init->Capacity));
         PAL_ZeroMemory(spmc_queue, sizeof(PAL_SPMC_QUEUE_U32));
         return -1;
     }
@@ -879,7 +879,7 @@ PAL_MPMCQueueQueryMemorySize_u32
     pal_uint32_t capacity
 )
 {   assert(capacity >= 2);
-    assert(PAL__IsPowerOfTwo(capacity));
+    assert(PAL_IsPowerOfTwo(capacity));
     return(capacity * sizeof(PAL_MPMC_CELL_U32));
 }
 
@@ -898,8 +898,8 @@ PAL_MPMCQueueCreate_u32
         PAL_ZeroMemory(mpmc_queue, sizeof(PAL_MPMC_QUEUE_U32));
         return -1;
     }
-    if (PAL__IsPowerOfTwo(init->Capacity) == 0)
-    {   assert(PAL__IsPowerOfTwo(init->Capacity));
+    if (PAL_IsPowerOfTwo(init->Capacity) == 0)
+    {   assert(PAL_IsPowerOfTwo(init->Capacity));
         PAL_ZeroMemory(mpmc_queue, sizeof(PAL_MPMC_QUEUE_U32));
         return -1;
     }
