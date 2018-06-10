@@ -8,8 +8,8 @@
  * @param _r The number of bits to rotate by.
  * @return The resulting value.
  */
-#ifndef PAL__rotl32
-#define PAL__rotl32(_x, _r)                                                    \
+#ifndef PAL_rotl32
+#define PAL_rotl32(_x, _r)                                                    \
     _rotl((_x), (_r))
 #endif
 
@@ -18,8 +18,8 @@
  * @param _r The number of bits to rotate by.
  * @return The resulting value.
  */
-#ifndef PAL__rotl64
-#define PAL__rotl64(_x, _r)                                                    \
+#ifndef PAL_rotl64
+#define PAL_rotl64(_x, _r)                                                    \
     _rotl64((_x), (_r))
 #endif
 
@@ -27,8 +27,8 @@
  * @param _value The value to check.
  * @return Non-zero if the value is a power-of-two, or zero otherwise.
  */
-#ifndef PAL__IsPowerOfTwo
-#define PAL__IsPowerOfTwo(_value)                                              \
+#ifndef PAL_IsPowerOfTwo
+#define PAL_IsPowerOfTwo(_value)                                              \
     (((_value) & ((_value)-1)) == 0)
 #endif
 
@@ -38,8 +38,8 @@
  * @return Non-zero if a set bit is found in the value, or zero of no set bit is found.
  * MSVC: _BitScanForward64. GCC: __builtin_ffs (different semantics).
  */
-#ifndef PAL__BitScan_ui64_lsb
-#define PAL__BitScan_ui64_lsb(_value, _outbit)                                 \
+#ifndef PAL_BitScan_ui64_lsb
+#define PAL_BitScan_ui64_lsb(_value, _outbit)                                 \
     ((int)_BitScanForward64((unsigned long*)(_outbit), (unsigned __int64)(_value)))
 #endif
 
@@ -49,8 +49,8 @@
  * @return Non-zero if a set bit is found in the value, or zero of no set bit is found.
  * MSVC: _BitScanReverse64. GCC: __builtin_ffs (different semantics).
  */
-#ifndef PAL__BitScan_ui64_msb
-#define PAL__BitScan_ui64_msb(_value, _outbit)                                 \
+#ifndef PAL_BitScan_ui64_msb
+#define PAL_BitScan_ui64_msb(_value, _outbit)                                 \
     ((int)_BitScanReverse64((unsigned long*)(_outbit), (unsigned __int64)(_value)))
 #endif
 
@@ -59,7 +59,7 @@
  * @return The next power-of-two value greater than or equal to n.
  */
 static pal_usize_t
-PAL__NextPow2GreaterOrEqual
+PAL_NextPow2GreaterOrEqual
 (
     pal_usize_t n
 )
@@ -78,7 +78,7 @@ PAL__NextPow2GreaterOrEqual
  * @return A 32-bit unsigned integer representing the value at address mem.
  */
 static PAL_INLINE pal_uint32_t
-PAL__ReadU32
+PAL_ReadU32
 (
     void const *mem
 )
@@ -93,7 +93,7 @@ PAL__ReadU32
  * @return A 32-bit unsigned integer representing the value at address mem.
  */
 static PAL_INLINE pal_uint64_t
-PAL__ReadU64
+PAL_ReadU64
 (
     void const *mem
 )
@@ -109,14 +109,14 @@ PAL__ReadU64
  * @return The updated accumulator.
  */
 static PAL_INLINE pal_uint32_t
-PAL__XXH32_round
+PAL_XXH32_round
 (
     pal_uint32_t acc, 
     pal_uint32_t val
 )
 {
     acc += val * 2246822519U;
-    acc  = PAL__rotl32(acc, 13);
+    acc  = PAL_rotl32(acc, 13);
     acc *= 2654435761U;
     return acc;
 }
@@ -127,14 +127,14 @@ PAL__XXH32_round
  * @return The updated accumulator.
  */
 static PAL_INLINE pal_uint64_t
-PAL__XXH64_round
+PAL_XXH64_round
 (
     pal_uint64_t acc, 
     pal_uint64_t val
 )
 {
     acc += val * 14029467366897019727ULL;
-    acc  = PAL__rotl64(acc, 31);
+    acc  = PAL_rotl64(acc, 31);
     acc *= 11400714785074694791ULL;
     return acc;
 }
@@ -145,13 +145,13 @@ PAL__XXH64_round
  * @return The updated accumulator.
  */
 static PAL_INLINE pal_uint64_t
-PAL__XXH64_merge
+PAL_XXH64_merge
 (
     pal_uint64_t acc, 
     pal_uint64_t val
 )
 {
-    val  = PAL__XXH64_round(0, val);
+    val  = PAL_XXH64_round(0, val);
     acc ^= val;
     acc  = acc * 11400714785074694791ULL + 9650029242287828579ULL;
     return acc;
@@ -163,7 +163,7 @@ PAL__XXH64_merge
  * @return The byte-swapped value.
  */
 static PAL_INLINE pal_uint16_t
-PAL__ReadSwap_i16
+PAL_ReadSwap_i16
 (
     void           *addr, 
     pal_ptrdiff_t offset
@@ -179,7 +179,7 @@ PAL__ReadSwap_i16
  * @return The byte-swapped value.
  */
 static PAL_INLINE pal_uint32_t
-PAL__ReadSwap_i32
+PAL_ReadSwap_i32
 (
     void           *addr, 
     pal_ptrdiff_t offset
@@ -195,7 +195,7 @@ PAL__ReadSwap_i32
  * @return The byte-swapped value.
  */
 static PAL_INLINE pal_uint64_t
-PAL__ReadSwap_i64
+PAL_ReadSwap_i64
 (
     void           *addr, 
     pal_ptrdiff_t offset
@@ -211,7 +211,7 @@ PAL__ReadSwap_i64
  * @return The byte-swapped value.
  */
 static PAL_INLINE pal_float32_t
-PAL__ReadSwap_f32
+PAL_ReadSwap_f32
 (
     void           *addr, 
     pal_ptrdiff_t offset
@@ -234,7 +234,7 @@ PAL__ReadSwap_f32
  * @return The byte-swapped value.
  */
 static PAL_INLINE pal_float64_t
-PAL__ReadSwap_f64
+PAL_ReadSwap_f64
 (
     void           *addr, 
     pal_ptrdiff_t offset
@@ -257,7 +257,7 @@ PAL__ReadSwap_f64
  * @param offset The offset into the buffer at which to write the value.
  */
 static PAL_INLINE void
-PAL__SwapWrite_si16
+PAL_SwapWrite_si16
 (
     void           *addr,
     pal_sint16_t   value,
@@ -274,7 +274,7 @@ PAL__SwapWrite_si16
  * @param offset The offset into the buffer at which to write the value.
  */
 static PAL_INLINE void
-PAL__SwapWrite_ui16
+PAL_SwapWrite_ui16
 (
     void           *addr,
     pal_uint16_t   value,
@@ -291,7 +291,7 @@ PAL__SwapWrite_ui16
  * @param offset The offset into the buffer at which to write the value.
  */
 static PAL_INLINE void
-PAL__SwapWrite_si32
+PAL_SwapWrite_si32
 (
     void           *addr,
     pal_sint32_t   value,
@@ -308,7 +308,7 @@ PAL__SwapWrite_si32
  * @param offset The offset into the buffer at which to write the value.
  */
 static PAL_INLINE void
-PAL__SwapWrite_ui32
+PAL_SwapWrite_ui32
 (
     void           *addr,
     pal_uint32_t   value,
@@ -325,7 +325,7 @@ PAL__SwapWrite_ui32
  * @param offset The offset into the buffer at which to write the value.
  */
 static PAL_INLINE void
-PAL__SwapWrite_si64
+PAL_SwapWrite_si64
 (
     void           *addr,
     pal_sint64_t   value,
@@ -342,7 +342,7 @@ PAL__SwapWrite_si64
  * @param offset The offset into the buffer at which to write the value.
  */
 static PAL_INLINE void
-PAL__SwapWrite_ui64
+PAL_SwapWrite_ui64
 (
     void           *addr,
     pal_uint64_t   value,
@@ -359,7 +359,7 @@ PAL__SwapWrite_ui64
  * @param offset The offset into the buffer at which to write the value.
  */
 static PAL_INLINE void
-PAL__SwapWrite_f32
+PAL_SwapWrite_f32
 (
     void           *addr,
     pal_float32_t  value,
@@ -382,7 +382,7 @@ PAL__SwapWrite_f32
  * @param offset The offset into the buffer at which to write the value.
  */
 static PAL_INLINE void
-PAL__SwapWrite_f64
+PAL_SwapWrite_f64
 (
     void           *addr,
     pal_float64_t  value,
@@ -400,12 +400,12 @@ PAL__SwapWrite_f64
 }
 
 /* @summary Compute the number of levels and size of the state data required for a memory allocator with a given configuration.
- * @param info The PAL__MEMORY_INDEX_SIZE to populate.
+ * @param info The PAL_MEMORY_INDEX_SIZE to populate.
  * @param allocation_size_min The minimum allocation size, in bytes. This must be a power-of-two, greater than zero.
  * @param allocation_size_max The maximum allocation size, in bytes. This must be a power-of-two, greater than the minimum allocation size.
  */
 static void
-PAL__MemoryAllocatorQueryMemoryIndexSize
+PAL_MemoryAllocatorQueryMemoryIndexSize
 (
     PAL_MEMORY_INDEX_SIZE     *info, 
     pal_usize_t allocation_size_min, 
@@ -423,8 +423,8 @@ PAL__MemoryAllocatorQueryMemoryIndexSize
     assert(allocation_size_min < allocation_size_max);
 
     /* determine the number of levels */
-    PAL__BitScan_ui64_msb(allocation_size_min, &min_bit);
-    PAL__BitScan_ui64_msb(allocation_size_max, &max_bit);
+    PAL_BitScan_ui64_msb(allocation_size_min, &min_bit);
+    PAL_BitScan_ui64_msb(allocation_size_max, &max_bit);
     level_count           = ((max_bit - min_bit)  + 1);
     /* calculate index sizes in words */
     split_index_size      = ((PAL_WORDSIZE_ONE << (level_count-1)) + PAL_WORDSIZE_MASK) >> PAL_WORDSIZE_SHIFT;
@@ -445,7 +445,7 @@ PAL__MemoryAllocatorQueryMemoryIndexSize
  * @param blocks_reserved The number of whole blocks that are reserved by the BytesReserved parameter. This argument should only be non-zero for the last level.
  */
 static void
-PAL__MemoryAllocatorDescribeLevel
+PAL_MemoryAllocatorDescribeLevel
 (
     PAL_MEMORY_ALLOCATOR_LEVEL *info, 
     pal_uint32_t         level_index, 
@@ -526,13 +526,13 @@ PAL__MemoryAllocatorDescribeLevel
 }
 
 /* @summary Locate the first free memory block at a given level. The block with the lowest offset is returned.
- * @param info The PAL__MEMORY_BLOCK_INFO to populate with information about the block at the specified offset.
+ * @param info The PAL_MEMORY_BLOCK_INFO to populate with information about the block at the specified offset.
  * @param alloc The PAL_MEMORY_ALLOCATOR to query. This must be the same allocator that returned the block.
  * @param level The zero-based index of the level at which the block was allocated.
  * @return One if a free memory block is located at the specified level, or zero if the level has no free blocks.
  */
 static int
-PAL__MemoryAllocatorFindFreeMemoryBlockAtLevel
+PAL_MemoryAllocatorFindFreeMemoryBlockAtLevel
 (
     PAL_MEMORY_BLOCK_INFO *block, 
     PAL_MEMORY_ALLOCATOR  *alloc, 
@@ -554,7 +554,7 @@ PAL__MemoryAllocatorFindFreeMemoryBlockAtLevel
      */
     while (word_index > first_word)
     {   /* find the first set bit indicating a free block */
-        if (PAL__BitScan_ui64_msb(status_index[word_index] & word_mask, &set_bit))
+        if (PAL_BitScan_ui64_msb(status_index[word_index] & word_mask, &set_bit))
             goto found_free_block;
         /* check all bits in words other than the last word */
         word_mask = ~PAL_WORDSIZE_ZERO;
@@ -562,7 +562,7 @@ PAL__MemoryAllocatorFindFreeMemoryBlockAtLevel
     }
     
     /* still nothing, so check the first word */
-    if (PAL__BitScan_ui64_msb(status_index[first_word] & info->WordMask0, &set_bit))
+    if (PAL_BitScan_ui64_msb(status_index[first_word] & info->WordMask0, &set_bit))
         goto found_free_block;
 
     /* no free blocks at this level */
@@ -585,7 +585,7 @@ found_free_block:
  * @return Non-zero if the chunk address space is committed, or zero if the chunk address space is not committed.
  */
 static PAL_INLINE pal_uint64_t
-PAL__HandleTableGetChunkCommitStatus
+PAL_HandleTableGetChunkCommitStatus
 (
     struct PAL_HANDLE_TABLE *table, 
     pal_uint32_t       chunk_index
@@ -602,7 +602,7 @@ PAL__HandleTableGetChunkCommitStatus
  * @param chunk_index The zero-based index of the committed chunk.
  */
 static PAL_INLINE void
-PAL__HandleTableSetChunkCommitStatus
+PAL_HandleTableSetChunkCommitStatus
 (
     struct PAL_HANDLE_TABLE *table, 
     pal_uint32_t       chunk_index
@@ -619,7 +619,7 @@ PAL__HandleTableSetChunkCommitStatus
  * @param chunk_index The zero-based index of the available chunk.
  */
 static PAL_INLINE void
-PAL__HandleTableMarkChunkAvailable
+PAL_HandleTableMarkChunkAvailable
 (
     struct PAL_HANDLE_TABLE *table, 
     pal_uint32_t       chunk_index
@@ -636,7 +636,7 @@ PAL__HandleTableMarkChunkAvailable
  * @param chunk_index The zero-based index of the full chunk.
  */
 static PAL_INLINE void
-PAL__HandleTableMarkChunkFull
+PAL_HandleTableMarkChunkFull
 (
     struct PAL_HANDLE_TABLE *table, 
     pal_uint32_t       chunk_index
@@ -656,7 +656,7 @@ PAL__HandleTableMarkChunkFull
  * The caller should have previously ensured that the chunk is committed prior to dereferencing any address within the address range.
  */
 static PAL_INLINE pal_uint8_t*
-PAL__HandleTableGetChunkData
+PAL_HandleTableGetChunkData
 (
     struct PAL_HANDLE_TABLE *table,
     pal_uint32_t       chunk_index
@@ -671,7 +671,7 @@ PAL__HandleTableGetChunkData
  * @return A pointer to the start of the sparse data array used to map handle values to dense indices.
  */
 static PAL_INLINE pal_uint32_t*
-PAL__HandleTableGetChunkState
+PAL_HandleTableGetChunkState
 (
     struct PAL_HANDLE_TABLE *table, 
     pal_uint32_t       chunk_index
@@ -691,7 +691,7 @@ PAL__HandleTableGetChunkState
  * @return A pointer to the start of the dense handle array specifying the live handles in the chunk.
  */
 static PAL_INLINE pal_uint32_t*
-PAL__HandleTableGetChunkDense
+PAL_HandleTableGetChunkDense
 (
     struct PAL_HANDLE_TABLE *table, 
     pal_uint32_t       chunk_index
@@ -712,7 +712,7 @@ PAL__HandleTableGetChunkDense
  * @return The base address of the chunk, or NULL if the chunk could not be committed.
  */
 static pal_uint8_t*
-PAL__HandleTableCommitChunk
+PAL_HandleTableCommitChunk
 (
     struct PAL_HANDLE_TABLE *table, 
     pal_uint32_t       chunk_index
@@ -755,7 +755,7 @@ PAL__HandleTableCommitChunk
  * @return Zero if the table can accomodate the request, or non-zero if the table cannot accomodate the request.
  */
 static int
-PAL__HandleTableEnsure
+PAL_HandleTableEnsure
 (
     struct PAL_HANDLE_TABLE *table, 
     pal_usize_t              count, 
@@ -800,7 +800,7 @@ PAL__HandleTableEnsure
          * if statusw != 0, then at least one chunk has at least one free slot.
          * if commitw != 0, then at least one chunk in this group is not committed.
          */
-        while (statusw && PAL__BitScan_ui64_lsb(statusw, &bit))
+        while (statusw && PAL_BitScan_ui64_lsb(statusw, &bit))
         {   /* a chunk has one or more free slots */
             bitmask = 1ULL << bit;
             chunk   =(word << PAL_HANDLE_CHUNK_WORD_SHIFT)+bit;
@@ -822,7 +822,7 @@ PAL__HandleTableEnsure
             statusw &= ~bitmask;
         }
 
-        if (commitw != 0 && PAL__BitScan_ui64_lsb(commitw, &bit))
+        if (commitw != 0 && PAL_BitScan_ui64_lsb(commitw, &bit))
         {   /* there's at least one uncommitted chunk in this group.
              * this implies that any subsequent chunks are also not 
              * committed, because the table will fill completely 
@@ -907,7 +907,7 @@ PAL__HandleTableEnsure
  * @return The number of handles allocated from the chunk and written to the handles array. This value should be used to increment the offset value.
  */
 static pal_uint32_t
-PAL__HandleTableCreateIdsInChunk
+PAL_HandleTableCreateIdsInChunk
 (
     struct PAL_HANDLE_TABLE *table, 
     PAL_HANDLE            *handles, 
@@ -917,9 +917,9 @@ PAL__HandleTableCreateIdsInChunk
     pal_uint16_t             count
 )
 {
-    pal_uint32_t      *state = PAL__HandleTableGetChunkState(table, chunk);
-    pal_uint32_t      *dense = PAL__HandleTableGetChunkDense(table, chunk);
-    pal_uint16_t         num = PAL__HandleTableGetChunkItemCount(table, chunk);
+    pal_uint32_t      *state = PAL_HandleTableGetChunkState(table, chunk);
+    pal_uint32_t      *dense = PAL_HandleTableGetChunkDense(table, chunk);
+    pal_uint16_t         num = PAL_HandleTableGetChunkItemCount(table, chunk);
     pal_uint16_t           n = 0;
     pal_uint32_t dense_index = 0;
     pal_uint32_t state_index = 0;
@@ -929,9 +929,9 @@ PAL__HandleTableCreateIdsInChunk
 
     if ((num + count) == PAL_HANDLE_CHUNK_CAPACITY)
     {   /* the chunk will be entirely used after this call */
-        PAL__HandleTableMarkChunkFull(table, chunk);
+        PAL_HandleTableMarkChunkFull(table, chunk);
     }
-    PAL__HandleTableSetChunkItemCount(table, chunk, num + count);
+    PAL_HandleTableSetChunkItemCount(table, chunk, num + count);
     
     /* allocate new handles from the chunk */
     for (i = 0; i < count; ++i, ++num, ++n)
@@ -939,8 +939,8 @@ PAL__HandleTableCreateIdsInChunk
         dense_index        = num;
         state_index        = dense[num];
         state_value        = state[state_index];
-        generation         = PAL__HandleStateGetGeneration(state_value);
-        dense[dense_index] = PAL__HandleValuePack(chunk, state_index, nspace, generation);
+        generation         = PAL_HandleStateGetGeneration(state_value);
+        dense[dense_index] = PAL_HandleValuePack(chunk, state_index, nspace, generation);
         state[state_index] = PAL_HANDLE_VALID_MASK_PACKED | (dense_index << PAL_HANDLE_INDEX_SHIFT) | (generation << PAL_HANDLE_GENER_SHIFT);
         handles[offset + n]= dense[dense_index];
     }
@@ -960,7 +960,7 @@ PAL__HandleTableCreateIdsInChunk
  * @return The number of handles actually inserted into the chunk. Occupied slots are not overwritten.
  */
 static pal_uint32_t
-PAL__HandleTableInsertIdsInChunk
+PAL_HandleTableInsertIdsInChunk
 (
     struct PAL_HANDLE_TABLE *table, 
     PAL_HANDLE            *handles, 
@@ -979,9 +979,9 @@ PAL__HandleTableInsertIdsInChunk
     pal_uint32_t       handle;
     pal_uint16_t insert_count;
 
-    if (PAL__HandleTableGetChunkCommitStatus(table, chunk_index) == 0)
+    if (PAL_HandleTableGetChunkCommitStatus(table, chunk_index) == 0)
     {   /* this chunk is not committed - commit it */
-        if (PAL__HandleTableCommitChunk(table, chunk_index) != 0)
+        if (PAL_HandleTableCommitChunk(table, chunk_index) != 0)
         {   /* failed to commit the chunk - cannot proceed */
             return 0;
         }
@@ -998,8 +998,8 @@ PAL__HandleTableInsertIdsInChunk
     while (range_beg != range_end)
     {
         handle        = handles[range_beg++];
-        generation    = PAL__HandleValueGetGeneration(handle);
-        state_index   = PAL__HandleValueGetStateIndex(handle);
+        generation    = PAL_HandleValueGetGeneration(handle);
+        state_index   = PAL_HandleValueGetStateIndex(handle);
         state_value   = state[state_index];
         dense_index   = chunk_count + insert_count;
         if (state_value == 0)
@@ -1011,7 +1011,7 @@ PAL__HandleTableInsertIdsInChunk
     }
 
     /* update the chunk status */
-    PAL__HandleTableSetChunkItemCount(table, chunk_index, chunk_count + insert_count);
+    PAL_HandleTableSetChunkItemCount(table, chunk_index, chunk_count + insert_count);
     return insert_count;
 }
 
@@ -1028,7 +1028,7 @@ PAL__HandleTableInsertIdsInChunk
  * @return The number of IDs deleted from the chunk (always 1).
  */
 static pal_uint16_t
-PAL__HandleTableDeleteIdsInChunk_One
+PAL_HandleTableDeleteIdsInChunk_One
 (
     struct PAL_HANDLE_TABLE *table, 
     PAL_HANDLE            *handles, 
@@ -1042,9 +1042,9 @@ PAL__HandleTableDeleteIdsInChunk_One
 {
     pal_uint32_t   last_dense = chunk_count - 1;
     pal_uint32_t stream_count = PAL_MemoryViewStreamCount(data);
-    pal_uint32_t  state_index = PAL__HandleValueGetStateIndex(handles[delete_index]);
+    pal_uint32_t  state_index = PAL_HandleValueGetStateIndex(handles[delete_index]);
     pal_uint32_t  moved_value = dense[last_dense];
-    pal_uint32_t  dense_index = PAL__HandleStateGetDenseIndex(state[state_index]);
+    pal_uint32_t  dense_index = PAL_HandleStateGetDenseIndex(state[state_index]);
     pal_uint32_t            i;
 
     /* clear the liveness bit and dense index portions of the state.
@@ -1058,8 +1058,8 @@ PAL__HandleTableDeleteIdsInChunk_One
      */
     if (dense_index != last_dense)
     {
-        pal_uint32_t moved_state = PAL__HandleValueGetStateIndex(moved_value);
-        pal_uint32_t moved_gener = PAL__HandleValueGetGeneration(moved_value);
+        pal_uint32_t moved_state = PAL_HandleValueGetStateIndex(moved_value);
+        pal_uint32_t moved_gener = PAL_HandleValueGetGeneration(moved_value);
         state[moved_state] = PAL_HANDLE_VALID_MASK_PACKED | (dense_index << PAL_HANDLE_INDEX_SHIFT) | (moved_gener << PAL_HANDLE_GENER_SHIFT);
         dense[dense_index] = moved_value;
         for (i = 0; i < stream_count; ++i)
@@ -1075,8 +1075,8 @@ PAL__HandleTableDeleteIdsInChunk_One
     dense[last_dense] = state_index;
 
     /* update the chunk state */
-    PAL__HandleTableMarkChunkAvailable(table, chunk_index);
-    PAL__HandleTableSetChunkItemCount (table, chunk_index, chunk_count-1);
+    PAL_HandleTableMarkChunkAvailable(table, chunk_index);
+    PAL_HandleTableSetChunkItemCount (table, chunk_index, chunk_count-1);
     return 1;
 }
 
@@ -1093,7 +1093,7 @@ PAL__HandleTableDeleteIdsInChunk_One
  * @return The number of IDs removed from the chunk (always 1.)
  */
 static pal_uint16_t
-PAL__HandleTableRemoveIdsInChunk_One
+PAL_HandleTableRemoveIdsInChunk_One
 (
     struct PAL_HANDLE_TABLE *table, 
     PAL_HANDLE            *handles, 
@@ -1108,10 +1108,10 @@ PAL__HandleTableRemoveIdsInChunk_One
     pal_uint32_t   last_dense = chunk_count - 1;
     pal_uint32_t       handle = handles[remove_index];
     pal_uint32_t stream_count = PAL_MemoryViewStreamCount(data);
-    pal_uint32_t  state_index = PAL__HandleValueGetStateIndex(handle);
+    pal_uint32_t  state_index = PAL_HandleValueGetStateIndex(handle);
     pal_uint32_t  state_value = state[state_index];
     pal_uint32_t  moved_value = dense[last_dense];
-    pal_uint32_t  dense_index = PAL__HandleStateGetDenseIndex(state_value);
+    pal_uint32_t  dense_index = PAL_HandleStateGetDenseIndex(state_value);
     pal_uint32_t            i;
 
     /* completely wipe out the state value, to mark the slot as unoccupied */
@@ -1123,8 +1123,8 @@ PAL__HandleTableRemoveIdsInChunk_One
      */
     if (dense_index != last_dense)
     {
-        pal_uint32_t moved_state = PAL__HandleValueGetStateIndex(moved_value);
-        pal_uint32_t moved_gener = PAL__HandleValueGetGeneration(moved_value);
+        pal_uint32_t moved_state = PAL_HandleValueGetStateIndex(moved_value);
+        pal_uint32_t moved_gener = PAL_HandleValueGetGeneration(moved_value);
         state[moved_state] = PAL_HANDLE_VALID_MASK_PACKED | (dense_index << PAL_HANDLE_INDEX_SHIFT) | (moved_gener << PAL_HANDLE_GENER_SHIFT);
         dense[dense_index] = moved_value;
         for (i = 0; i < stream_count; ++i)
@@ -1137,7 +1137,7 @@ PAL__HandleTableRemoveIdsInChunk_One
     }
 
     /* update the chunk state */
-    PAL__HandleTableSetChunkItemCount(table, chunk_index, chunk_count-1);
+    PAL_HandleTableSetChunkItemCount(table, chunk_index, chunk_count-1);
     return 1;
 }
 
@@ -1154,7 +1154,7 @@ PAL__HandleTableRemoveIdsInChunk_One
  * @return The number of IDs deleted from the chunk.
  */
 static pal_uint16_t
-PAL__HandleTableDeleteIdsInChunk_All
+PAL_HandleTableDeleteIdsInChunk_All
 (
     struct PAL_HANDLE_TABLE *table, 
     PAL_HANDLE            *handles, 
@@ -1172,17 +1172,17 @@ PAL__HandleTableDeleteIdsInChunk_All
 
     while (range_beg != range_end)
     {
-        state_index        = PAL__HandleValueGetStateIndex(handles[range_beg++]);
+        state_index        = PAL_HandleValueGetStateIndex(handles[range_beg++]);
         state_value        = state[state_index];
-        dense_index        = PAL__HandleStateGetDenseIndex(state_value);
+        dense_index        = PAL_HandleStateGetDenseIndex(state_value);
         state[state_index] =(state_value+1) & PAL_HANDLE_GENER_MASK;
         dense[dense_index] = state_index;
         delete_count++;
     }
 
     /* update the chunk state */
-    PAL__HandleTableMarkChunkAvailable(table, chunk_index);
-    PAL__HandleTableSetChunkItemCount (table, chunk_index, 0);
+    PAL_HandleTableMarkChunkAvailable(table, chunk_index);
+    PAL_HandleTableSetChunkItemCount (table, chunk_index, 0);
     return delete_count;
 }
 
@@ -1199,7 +1199,7 @@ PAL__HandleTableDeleteIdsInChunk_All
  * @return The number of IDs removed from the chunk.
  */
 static pal_uint16_t
-PAL__HandleTableRemoveIdsInChunk_All
+PAL_HandleTableRemoveIdsInChunk_All
 (
     struct PAL_HANDLE_TABLE *table, 
     PAL_HANDLE            *handles, 
@@ -1214,13 +1214,13 @@ PAL__HandleTableRemoveIdsInChunk_All
 
     while (range_beg != range_end)
     {
-        state_index = PAL__HandleValueGetStateIndex(handles[range_beg++]);
+        state_index = PAL_HandleValueGetStateIndex(handles[range_beg++]);
         state[state_index] = 0; /* mark as unoccupied */
         remove_count++;
     }
 
     /* update the chunk state */
-    PAL__HandleTableSetChunkItemCount(table, chunk_index, 0);
+    PAL_HandleTableSetChunkItemCount(table, chunk_index, 0);
     return remove_count;
 }
 
@@ -1232,7 +1232,7 @@ PAL__HandleTableRemoveIdsInChunk_All
  * @return The number of IDs deleted from the chunk (always 1024).
  */
 static pal_uint16_t
-PAL__HandleTableDeleteIdsInChunk_Full
+PAL_HandleTableDeleteIdsInChunk_Full
 (
     struct PAL_HANDLE_TABLE *table, 
     pal_uint32_t       chunk_index, 
@@ -1261,7 +1261,7 @@ PAL__HandleTableDeleteIdsInChunk_Full
  * @return The number of IDs deleted from the chunk (always 1024).
  */
 static pal_uint16_t
-PAL__HandleTableRemoveIdsInChunk_Full
+PAL_HandleTableRemoveIdsInChunk_Full
 (
     struct PAL_HANDLE_TABLE *table, 
     pal_uint32_t       chunk_index, 
@@ -1287,7 +1287,7 @@ PAL__HandleTableRemoveIdsInChunk_Full
  * @return The number of IDs deleted from the chunk.
  */
 static pal_uint16_t
-PAL__HandleTableDeleteIdsInChunk_Many
+PAL_HandleTableDeleteIdsInChunk_Many
 (
     struct PAL_HANDLE_TABLE *table, 
     PAL_HANDLE            *handles, 
@@ -1327,12 +1327,12 @@ PAL__HandleTableDeleteIdsInChunk_Many
 
     while (range_cur != range_end)
     {
-        state_index = PAL__HandleValueGetStateIndex(handles[range_cur++]);
+        state_index = PAL_HandleValueGetStateIndex(handles[range_cur++]);
         state_value = state[state_index];
-        dense_index = PAL__HandleStateGetDenseIndex(state_value);
+        dense_index = PAL_HandleStateGetDenseIndex(state_value);
         moved_value = dense[last_dense];
-        moved_index = PAL__HandleValueGetStateIndex(moved_value);
-        moved_gener = PAL__HandleValueGetGeneration(moved_value);
+        moved_index = PAL_HandleValueGetStateIndex(moved_value);
+        moved_gener = PAL_HandleValueGetGeneration(moved_value);
 
         /* clear the liveness and dense index assigned to the state */
         state [state_index] = (state_value+1) & PAL_HANDLE_GENER_MASK;
@@ -1369,7 +1369,7 @@ PAL__HandleTableDeleteIdsInChunk_Many
     {   /* move all the data to its final location */
         while (range_beg != range_end)
         {
-            state_index    = PAL__HandleValueGetStateIndex(handles[range_beg++]);
+            state_index    = PAL_HandleValueGetStateIndex(handles[range_beg++]);
             dense_src      = src_di[state_index];
             dense_dst      = dst_di[state_index];
             if (dense_dst != 0xFFFF && dense_dst != dense_src)
@@ -1385,8 +1385,8 @@ PAL__HandleTableDeleteIdsInChunk_Many
         }
     }
     /* update the chunk state */
-    PAL__HandleTableMarkChunkAvailable(table, chunk_index);
-    PAL__HandleTableSetChunkItemCount (table, chunk_index, chunk_count-delete_count);
+    PAL_HandleTableMarkChunkAvailable(table, chunk_index);
+    PAL_HandleTableSetChunkItemCount (table, chunk_index, chunk_count-delete_count);
     return delete_count;
 }
 
@@ -1404,7 +1404,7 @@ PAL__HandleTableDeleteIdsInChunk_Many
  * @return The number of IDs removed from the chunk.
  */
 static pal_uint16_t
-PAL__HandleTableRemoveIdsInChunk_Many
+PAL_HandleTableRemoveIdsInChunk_Many
 (
     struct PAL_HANDLE_TABLE *table, 
     PAL_HANDLE            *handles, 
@@ -1444,12 +1444,12 @@ PAL__HandleTableRemoveIdsInChunk_Many
 
     while (range_cur != range_end)
     {
-        state_index = PAL__HandleValueGetStateIndex(handles[range_cur++]);
+        state_index = PAL_HandleValueGetStateIndex(handles[range_cur++]);
         state_value = state[state_index];
-        dense_index = PAL__HandleStateGetDenseIndex(state_value);
+        dense_index = PAL_HandleStateGetDenseIndex(state_value);
         moved_value = dense[last_dense];
-        moved_index = PAL__HandleValueGetStateIndex(moved_value);
-        moved_gener = PAL__HandleValueGetGeneration(moved_value);
+        moved_index = PAL_HandleValueGetStateIndex(moved_value);
+        moved_gener = PAL_HandleValueGetGeneration(moved_value);
 
         /* mark the slot as being unoccupied */
         state [state_index] = 0;
@@ -1486,7 +1486,7 @@ PAL__HandleTableRemoveIdsInChunk_Many
     {   /* move all the data to its final location */
         while (range_beg != range_end)
         {
-            state_index    = PAL__HandleValueGetStateIndex(handles[range_beg++]);
+            state_index    = PAL_HandleValueGetStateIndex(handles[range_beg++]);
             dense_src      = src_di[state_index];
             dense_dst      = dst_di[state_index];
             if (dense_dst != 0xFFFF && dense_dst != dense_src)
@@ -1502,7 +1502,7 @@ PAL__HandleTableRemoveIdsInChunk_Many
         }
     }
     /* update the chunk state */
-    PAL__HandleTableSetChunkItemCount(table, chunk_index, chunk_count-remove_count);
+    PAL_HandleTableSetChunkItemCount(table, chunk_index, chunk_count-remove_count);
     return remove_count;
 }
 
@@ -1562,12 +1562,12 @@ PAL_HashData32
         pal_uint32_t                   v3 = seed  + 0;
         pal_uint32_t                   v4 = seed  - c1;
         do {
-            v1 = PAL__XXH32_round(v1, PAL__ReadU32(p_itr)); p_itr += 4;
-            v2 = PAL__XXH32_round(v2, PAL__ReadU32(p_itr)); p_itr += 4;
-            v3 = PAL__XXH32_round(v3, PAL__ReadU32(p_itr)); p_itr += 4;
-            v4 = PAL__XXH32_round(v4, PAL__ReadU32(p_itr)); p_itr += 4;
+            v1 = PAL_XXH32_round(v1, PAL_ReadU32(p_itr)); p_itr += 4;
+            v2 = PAL_XXH32_round(v2, PAL_ReadU32(p_itr)); p_itr += 4;
+            v3 = PAL_XXH32_round(v3, PAL_ReadU32(p_itr)); p_itr += 4;
+            v4 = PAL_XXH32_round(v4, PAL_ReadU32(p_itr)); p_itr += 4;
         } while (p_itr <= p_limit);
-        h32 = PAL__rotl32(v1, 1) + PAL__rotl32(v2, 7) + PAL__rotl32(v3, 12) + PAL__rotl32(v4, 18);
+        h32 = PAL_rotl32(v1, 1) + PAL_rotl32(v2, 7) + PAL_rotl32(v3, 12) + PAL_rotl32(v4, 18);
     }
     else {
         h32 = seed + c5;
@@ -1576,13 +1576,13 @@ PAL_HashData32
     h32 += (pal_uint32_t) length;
 
     while (p_itr + 4 <= p_end) {
-        h32   += PAL__ReadU32(p_itr)  * c3;
-        h32    = PAL__rotl32(h32, 17) * c4;
+        h32   += PAL_ReadU32(p_itr)  * c3;
+        h32    = PAL_rotl32(h32, 17) * c4;
         p_itr += 4;
     }
     while (p_itr < p_end) {
         h32   += (*p_itr) * c5;
-        h32    = PAL__rotl32(h32, 11) * c1;
+        h32    = PAL_rotl32(h32, 11) * c1;
         p_itr++;
     }
 
@@ -1622,17 +1622,17 @@ PAL_HashData64
         pal_uint64_t                   v3 = seed  + 0;
         pal_uint64_t                   v4 = seed  - c1;
         do {
-            v1 = PAL__XXH64_round(v1, PAL__ReadU64(p_itr)); p_itr += 8;
-            v2 = PAL__XXH64_round(v2, PAL__ReadU64(p_itr)); p_itr += 8;
-            v3 = PAL__XXH64_round(v3, PAL__ReadU64(p_itr)); p_itr += 8;
-            v4 = PAL__XXH64_round(v4, PAL__ReadU64(p_itr)); p_itr += 8;
+            v1 = PAL_XXH64_round(v1, PAL_ReadU64(p_itr)); p_itr += 8;
+            v2 = PAL_XXH64_round(v2, PAL_ReadU64(p_itr)); p_itr += 8;
+            v3 = PAL_XXH64_round(v3, PAL_ReadU64(p_itr)); p_itr += 8;
+            v4 = PAL_XXH64_round(v4, PAL_ReadU64(p_itr)); p_itr += 8;
         } while (p_itr <= p_limit);
 
-        h64 = PAL__rotl64(v1, 1) + PAL__rotl64(v2, 7) + PAL__rotl64(v3, 12) + PAL__rotl64(v4, 18);
-        h64 = PAL__XXH64_merge(h64, v1);
-        h64 = PAL__XXH64_merge(h64, v2);
-        h64 = PAL__XXH64_merge(h64, v3);
-        h64 = PAL__XXH64_merge(h64, v4);
+        h64 = PAL_rotl64(v1, 1) + PAL_rotl64(v2, 7) + PAL_rotl64(v3, 12) + PAL_rotl64(v4, 18);
+        h64 = PAL_XXH64_merge(h64, v1);
+        h64 = PAL_XXH64_merge(h64, v2);
+        h64 = PAL_XXH64_merge(h64, v3);
+        h64 = PAL_XXH64_merge(h64, v4);
     }
     else {
         h64 = seed + c5;
@@ -1641,19 +1641,19 @@ PAL_HashData64
     h64 += (pal_uint64_t) length;
 
     while (p_itr + 8 <= p_end) {
-        pal_uint64_t const k1 = PAL__XXH64_round(0, PAL__ReadU64(p_itr));
+        pal_uint64_t const k1 = PAL_XXH64_round(0, PAL_ReadU64(p_itr));
         h64   ^= k1;
-        h64    = PAL__rotl64(h64, 27) * c1 + c4;
+        h64    = PAL_rotl64(h64, 27) * c1 + c4;
         p_itr += 8;
     }
     if (p_itr + 4 <= p_end) {
-        h64   ^= (pal_uint64_t)(PAL__ReadU32(p_itr)) * c1;
-        h64    = PAL__rotl64(h64, 23) * c2 + c3;
+        h64   ^= (pal_uint64_t)(PAL_ReadU32(p_itr)) * c1;
+        h64    = PAL_rotl64(h64, 23) * c2 + c3;
         p_itr += 4;
     }
     while (p_itr < p_end) {
         h64 ^= (*p_itr) * c5;
-        h64  = PAL__rotl64(h64, 11) * c1;
+        h64  = PAL_rotl64(h64, 11) * c1;
         p_itr++;
     }
 
@@ -1723,7 +1723,7 @@ PAL_Read_si16_msb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_MSB_FIRST
     return *(pal_sint16_t*)(((pal_uint8_t *) addr)+offset);
 #else
-    return  (pal_sint16_t )PAL__ReadSwap_i16(addr, offset);
+    return  (pal_sint16_t )PAL_ReadSwap_i16(addr, offset);
 #endif
 }
 
@@ -1737,7 +1737,7 @@ PAL_Read_si16_lsb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_LSB_FIRST
     return *(pal_sint16_t*)(((pal_uint8_t *) addr)+offset);
 #else
-    return  (pal_sint16_t )PAL__ReadSwap_i16(addr, offset);
+    return  (pal_sint16_t )PAL_ReadSwap_i16(addr, offset);
 #endif
 }
 
@@ -1761,7 +1761,7 @@ PAL_Read_ui16_msb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_MSB_FIRST
     return *(pal_uint16_t*)(((pal_uint8_t *) addr)+offset);
 #else
-    return  (pal_uint16_t )PAL__ReadSwap_i16(addr, offset);
+    return  (pal_uint16_t )PAL_ReadSwap_i16(addr, offset);
 #endif
 }
 
@@ -1775,7 +1775,7 @@ PAL_Read_ui16_lsb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_LSB_FIRST
     return *(pal_uint16_t*)(((pal_uint8_t *) addr)+offset);
 #else
-    return  (pal_uint16_t )PAL__ReadSwap_i16(addr, offset);
+    return  (pal_uint16_t )PAL_ReadSwap_i16(addr, offset);
 #endif
 }
 
@@ -1799,7 +1799,7 @@ PAL_Read_si32_msb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_MSB_FIRST
     return *(pal_sint32_t*)(((pal_uint8_t *) addr)+offset);
 #else
-    return  (pal_sint32_t )PAL__ReadSwap_i32(addr, offset);
+    return  (pal_sint32_t )PAL_ReadSwap_i32(addr, offset);
 #endif
 }
 
@@ -1813,7 +1813,7 @@ PAL_Read_si32_lsb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_LSB_FIRST
     return *(pal_sint32_t*)(((pal_uint8_t *) addr)+offset);
 #else
-    return  (pal_sint32_t )PAL__ReadSwap_i32(addr, offset);
+    return  (pal_sint32_t )PAL_ReadSwap_i32(addr, offset);
 #endif
 }
 
@@ -1837,7 +1837,7 @@ PAL_Read_ui32_msb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_MSB_FIRST
     return *(pal_uint32_t*)(((pal_uint8_t *) addr)+offset);
 #else
-    return  (pal_uint32_t )PAL__ReadSwap_i32(addr, offset);
+    return  (pal_uint32_t )PAL_ReadSwap_i32(addr, offset);
 #endif
 }
 
@@ -1851,7 +1851,7 @@ PAL_Read_ui32_lsb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_LSB_FIRST
     return *(pal_uint32_t*)(((pal_uint8_t *) addr)+offset);
 #else
-    return  (pal_uint32_t )PAL__ReadSwap_i32(addr, offset);
+    return  (pal_uint32_t )PAL_ReadSwap_i32(addr, offset);
 #endif
 }
 
@@ -1875,7 +1875,7 @@ PAL_Read_si64_msb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_MSB_FIRST
     return *(pal_sint64_t*)(((pal_uint8_t *) addr)+offset);
 #else
-    return  (pal_sint64_t )PAL__ReadSwap_i64(addr, offset);
+    return  (pal_sint64_t )PAL_ReadSwap_i64(addr, offset);
 #endif
 }
 
@@ -1889,7 +1889,7 @@ PAL_Read_si64_lsb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_LSB_FIRST
     return *(pal_sint64_t*)(((pal_uint8_t *) addr)+offset);
 #else
-    return  (pal_sint64_t )PAL__ReadSwap_i64(addr, offset);
+    return  (pal_sint64_t )PAL_ReadSwap_i64(addr, offset);
 #endif
 }
 
@@ -1913,7 +1913,7 @@ PAL_Read_ui64_msb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_MSB_FIRST
     return *(pal_uint64_t*)(((pal_uint8_t *) addr)+offset);
 #else
-    return  (pal_uint64_t )PAL__ReadSwap_i64(addr, offset);
+    return  (pal_uint64_t )PAL_ReadSwap_i64(addr, offset);
 #endif
 }
 
@@ -1927,7 +1927,7 @@ PAL_Read_ui64_lsb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_LSB_FIRST
     return *(pal_uint64_t*)(((pal_uint8_t *) addr)+offset);
 #else
-    return  (pal_uint64_t )PAL__ReadSwap_i64(addr, offset);
+    return  (pal_uint64_t )PAL_ReadSwap_i64(addr, offset);
 #endif
 }
 
@@ -1951,7 +1951,7 @@ PAL_Read_f32_msb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_MSB_FIRST
     return *(pal_float32_t*)(((pal_uint8_t *) addr)+offset);
 #else
-    return  (pal_float32_t )PAL__ReadSwap_f32(addr, offset);
+    return  (pal_float32_t )PAL_ReadSwap_f32(addr, offset);
 #endif
 }
 
@@ -1965,7 +1965,7 @@ PAL_Read_f32_lsb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_LSB_FIRST
     return *(pal_float32_t*)(((pal_uint8_t *) addr)+offset);
 #else
-    return  (pal_float32_t )PAL__ReadSwap_f32(addr, offset);
+    return  (pal_float32_t )PAL_ReadSwap_f32(addr, offset);
 #endif
 }
 
@@ -1989,7 +1989,7 @@ PAL_Read_f64_msb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_MSB_FIRST
     return *(pal_float64_t*)(((pal_uint8_t *) addr)+offset);
 #else
-    return  (pal_float64_t )PAL__ReadSwap_f64(addr, offset);
+    return  (pal_float64_t )PAL_ReadSwap_f64(addr, offset);
 #endif
 }
 
@@ -2003,7 +2003,7 @@ PAL_Read_f64_lsb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_LSB_FIRST
     return *(pal_float64_t*)(((pal_uint8_t *) addr)+offset);
 #else
-    return  (pal_float64_t )PAL__ReadSwap_f64(addr, offset);
+    return  (pal_float64_t )PAL_ReadSwap_f64(addr, offset);
 #endif
 }
 
@@ -2054,7 +2054,7 @@ PAL_Write_si16_msb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_MSB_FIRST
     *(pal_sint16_t*)(((pal_uint8_t*) addr)+offset) = value;
 #else
-    PAL__SwapWrite_si16(addr, value, offset);
+    PAL_SwapWrite_si16(addr, value, offset);
 #endif
     return sizeof(pal_sint16_t);
 }
@@ -2070,7 +2070,7 @@ PAL_Write_si16_lsb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_LSB_FIRST
     *(pal_sint16_t*)(((pal_uint8_t*) addr)+offset) = value;
 #else
-    PAL__SwapWrite_si16(addr, value, offset);
+    PAL_SwapWrite_si16(addr, value, offset);
 #endif
     return sizeof(pal_sint16_t);
 }
@@ -2098,7 +2098,7 @@ PAL_Write_ui16_msb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_MSB_FIRST
     *(pal_uint16_t*)(((pal_uint8_t*) addr)+offset) = value;
 #else
-    PAL__SwapWrite_ui16(addr, value, offset);
+    PAL_SwapWrite_ui16(addr, value, offset);
 #endif
     return sizeof(pal_uint16_t);
 }
@@ -2114,7 +2114,7 @@ PAL_Write_ui16_lsb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_LSB_FIRST
     *(pal_uint16_t*)(((pal_uint8_t*) addr)+offset) = value;
 #else
-    PAL__SwapWrite_ui16(addr, value, offset);
+    PAL_SwapWrite_ui16(addr, value, offset);
 #endif
     return sizeof(pal_uint16_t);
 }
@@ -2142,7 +2142,7 @@ PAL_Write_si32_msb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_MSB_FIRST
     *(pal_sint32_t*)(((pal_uint8_t*) addr)+offset) = value;
 #else
-    PAL__SwapWrite_si32(addr, value, offset);
+    PAL_SwapWrite_si32(addr, value, offset);
 #endif
     return sizeof(pal_sint32_t);
 }
@@ -2158,7 +2158,7 @@ PAL_Write_si32_lsb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_LSB_FIRST
     *(pal_sint32_t*)(((pal_uint8_t*) addr)+offset) = value;
 #else
-    PAL__SwapWrite_si32(addr, value, offset);
+    PAL_SwapWrite_si32(addr, value, offset);
 #endif
     return sizeof(pal_sint32_t);
 }
@@ -2186,7 +2186,7 @@ PAL_Write_ui32_msb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_MSB_FIRST
     *(pal_uint32_t*)(((pal_uint8_t*) addr)+offset) = value;
 #else
-    PAL__SwapWrite_ui32(addr, value, offset);
+    PAL_SwapWrite_ui32(addr, value, offset);
 #endif
     return sizeof(pal_uint32_t);
 }
@@ -2202,7 +2202,7 @@ PAL_Write_ui32_lsb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_LSB_FIRST
     *(pal_uint32_t*)(((pal_uint8_t*) addr)+offset) = value;
 #else
-    PAL__SwapWrite_ui32(addr, value, offset);
+    PAL_SwapWrite_ui32(addr, value, offset);
 #endif
     return sizeof(pal_uint32_t);
 }
@@ -2230,7 +2230,7 @@ PAL_Write_si64_msb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_MSB_FIRST
     *(pal_sint64_t*)(((pal_uint8_t*) addr)+offset) = value;
 #else
-    PAL__SwapWrite_si64(addr, value, offset);
+    PAL_SwapWrite_si64(addr, value, offset);
 #endif
     return sizeof(pal_sint64_t);
 }
@@ -2246,7 +2246,7 @@ PAL_Write_si64_lsb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_LSB_FIRST
     *(pal_sint64_t*)(((pal_uint8_t*) addr)+offset) = value;
 #else
-    PAL__SwapWrite_si64(addr, value, offset);
+    PAL_SwapWrite_si64(addr, value, offset);
 #endif
     return sizeof(pal_sint64_t);
 }
@@ -2274,7 +2274,7 @@ PAL_Write_ui64_msb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_MSB_FIRST
     *(pal_uint64_t*)(((pal_uint8_t*) addr)+offset) = value;
 #else
-    PAL__SwapWrite_ui64(addr, value, offset);
+    PAL_SwapWrite_ui64(addr, value, offset);
 #endif
     return sizeof(pal_uint64_t);
 }
@@ -2290,7 +2290,7 @@ PAL_Write_ui64_lsb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_LSB_FIRST
     *(pal_uint64_t*)(((pal_uint8_t*) addr)+offset) = value;
 #else
-    PAL__SwapWrite_ui64(addr, value, offset);
+    PAL_SwapWrite_ui64(addr, value, offset);
 #endif
     return sizeof(pal_uint64_t);
 }
@@ -2318,7 +2318,7 @@ PAL_Write_f32_msb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_MSB_FIRST
     *(pal_float32_t*)(((pal_uint8_t*) addr)+offset) = value;
 #else
-    PAL__SwapWrite_f32(addr, value, offset);
+    PAL_SwapWrite_f32(addr, value, offset);
 #endif
     return sizeof(pal_float32_t);
 }
@@ -2334,7 +2334,7 @@ PAL_Write_f32_lsb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_LSB_FIRST
     *(pal_float32_t*)(((pal_uint8_t*) addr)+offset) = value;
 #else
-    PAL__SwapWrite_f32(addr, value, offset);
+    PAL_SwapWrite_f32(addr, value, offset);
 #endif
     return sizeof(pal_float32_t);
 }
@@ -2362,7 +2362,7 @@ PAL_Write_f64_msb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_MSB_FIRST
     *(pal_float64_t*)(((pal_uint8_t*) addr)+offset) = value;
 #else
-    PAL__SwapWrite_f64(addr, value, offset);
+    PAL_SwapWrite_f64(addr, value, offset);
 #endif
     return sizeof(pal_float64_t);
 }
@@ -2378,7 +2378,7 @@ PAL_Write_f64_lsb
 #if PAL_SYSTEM_ENDIANESS == PAL_ENDIANESS_LSB_FIRST
     *(pal_float64_t*)(((pal_uint8_t*) addr)+offset) = value;
 #else
-    PAL__SwapWrite_f64(addr, value, offset);
+    PAL_SwapWrite_f64(addr, value, offset);
 #endif
     return sizeof(pal_float64_t);
 }
@@ -3053,12 +3053,12 @@ PAL_MemoryAllocatorQueryHostMemorySize
     PAL_MEMORY_INDEX_SIZE info;
 
     /* arguments must be powers of two greater than zero */
-    if (!PAL__IsPowerOfTwo(allocation_size_min) || allocation_size_min == 0)
+    if (!PAL_IsPowerOfTwo(allocation_size_min) || allocation_size_min == 0)
         return 0;
-    if (!PAL__IsPowerOfTwo(allocation_size_max) || allocation_size_max <= allocation_size_min)
+    if (!PAL_IsPowerOfTwo(allocation_size_max) || allocation_size_max <= allocation_size_min)
         return 0;
 
-    PAL__MemoryAllocatorQueryMemoryIndexSize(&info, allocation_size_min, allocation_size_max);
+    PAL_MemoryAllocatorQueryMemoryIndexSize(&info, allocation_size_min, allocation_size_max);
     return (pal_usize_t) info.TotalIndexSize;
 }
 
@@ -3090,8 +3090,8 @@ PAL_MemoryAllocatorCreate
         PAL_ZeroMemory(alloc, sizeof(PAL_MEMORY_ALLOCATOR));
         return -1;
     }
-    if (!PAL__IsPowerOfTwo(total_mem_size) || total_mem_size == 0)
-    {   assert(PAL__IsPowerOfTwo(total_mem_size) && "init->MemorySize+init->BytesReserved must be a power-of-two");
+    if (!PAL_IsPowerOfTwo(total_mem_size) || total_mem_size == 0)
+    {   assert(PAL_IsPowerOfTwo(total_mem_size) && "init->MemorySize+init->BytesReserved must be a power-of-two");
         PAL_ZeroMemory(alloc, sizeof(PAL_MEMORY_ALLOCATOR));
         return -1;
     }
@@ -3107,14 +3107,14 @@ PAL_MemoryAllocatorCreate
         return -1;
     }
     /* arguments must be powers of two greater than zero */
-    if (!PAL__IsPowerOfTwo(init->AllocationSizeMin) || init->AllocationSizeMin < 16)
-    {   assert(PAL__IsPowerOfTwo(init->AllocationSizeMin) && "AllocationSizeMin must be a power-of-two");
+    if (!PAL_IsPowerOfTwo(init->AllocationSizeMin) || init->AllocationSizeMin < 16)
+    {   assert(PAL_IsPowerOfTwo(init->AllocationSizeMin) && "AllocationSizeMin must be a power-of-two");
         assert(init->AllocationSizeMin >= 16);
         PAL_ZeroMemory(alloc, sizeof(PAL_MEMORY_ALLOCATOR));
         return -1;
     }
-    if (!PAL__IsPowerOfTwo(init->AllocationSizeMax) || init->AllocationSizeMax < init->AllocationSizeMin)
-    {   assert(PAL__IsPowerOfTwo(init->AllocationSizeMax) && "AllocationSizeMax must be a power-of-two");
+    if (!PAL_IsPowerOfTwo(init->AllocationSizeMax) || init->AllocationSizeMax < init->AllocationSizeMin)
+    {   assert(PAL_IsPowerOfTwo(init->AllocationSizeMax) && "AllocationSizeMax must be a power-of-two");
         assert(init->AllocationSizeMin < init->AllocationSizeMax);
         PAL_ZeroMemory(alloc, sizeof(PAL_MEMORY_ALLOCATOR));
         return -1;
@@ -3126,7 +3126,7 @@ PAL_MemoryAllocatorCreate
     }
 
     /* determine the number of levels and ensure the count doesn't exceed the limit */
-    PAL__MemoryAllocatorQueryMemoryIndexSize(&index_size, init->AllocationSizeMin, init->AllocationSizeMax);
+    PAL_MemoryAllocatorQueryMemoryIndexSize(&index_size, init->AllocationSizeMin, init->AllocationSizeMax);
     level_bit    = index_size.MaxBitIndex;
     level_count  = index_size.LevelCount;
     split_index  = state_data + index_size.StatusIndexSize;
@@ -3162,7 +3162,7 @@ PAL_MemoryAllocatorCreate
     alloc->StatusIndexSize   = index_size.StatusIndexSize;
     for (level_index = 0; level_index < level_count; ++level_index, --level_bit)
     {
-        PAL__MemoryAllocatorDescribeLevel(&alloc->LevelInfo[level_index], level_index, level_bit, 0);
+        PAL_MemoryAllocatorDescribeLevel(&alloc->LevelInfo[level_index], level_index, level_bit, 0);
         alloc->FreeCount[level_index] = 0;
     }
 
@@ -3190,7 +3190,7 @@ PAL_MemoryAllocatorCreate
             assert(b.BlockOffset >= init->MemorySize);
         }
         /* update the LevelInfo for the last level so we don't even check the reserved words */
-        PAL__MemoryAllocatorDescribeLevel(&alloc->LevelInfo[level_count-1], level_count-1, alloc->LevelInfo[level_count-1].LevelBit, block_count);
+        PAL_MemoryAllocatorDescribeLevel(&alloc->LevelInfo[level_count-1], level_count-1, alloc->LevelInfo[level_count-1].LevelBit, block_count);
     }
     if (init->UserData != NULL && init->UserDataSize > 0)
     {
@@ -3232,13 +3232,13 @@ PAL_MemoryAllocatorAlloc
     }
 
     /* round the requested allocation size up to the nearest power of two >= size */
-    if ((pow2_size = PAL__NextPow2GreaterOrEqual(size)) > alloc->AllocationSizeMax)
+    if ((pow2_size = PAL_NextPow2GreaterOrEqual(size)) > alloc->AllocationSizeMax)
     {   assert(pow2_size <= alloc->AllocationSizeMax);
         return -1;
     }
 
     /* figure out what level the specified size corresponds to */
-    PAL__BitScan_ui64_msb(pow2_size, &bit_index);
+    PAL_BitScan_ui64_msb(pow2_size, &bit_index);
     level_idx = alloc->LevelInfo[0].LevelBit - bit_index;
     check_idx = level_idx;
 
@@ -3263,7 +3263,7 @@ PAL_MemoryAllocatorAlloc
             pal_uint64_t          block_size;
 
             /* locate the first free memory block at level check_idx */
-            PAL__MemoryAllocatorFindFreeMemoryBlockAtLevel(&block_info, alloc, check_idx);
+            PAL_MemoryAllocatorFindFreeMemoryBlockAtLevel(&block_info, alloc, check_idx);
             block_index_mask = PAL_WORDSIZE_ONE << (block_info.BlockIndex & PAL_WORDSIZE_MASK);
             block_index_word = block_info.BlockIndex >> PAL_WORDSIZE_SHIFT;
             block_offset     = block_info.BlockOffset;
@@ -3385,14 +3385,14 @@ PAL_MemoryAllocatorRealloc
 
     /* round up to the block size closest to new_size */
     pow2_size_old = (pal_uint64_t) existing->SizeInBytes;
-    if ((pow2_size_new = PAL__NextPow2GreaterOrEqual(new_size)) > alloc->AllocationSizeMax)
+    if ((pow2_size_new = PAL_NextPow2GreaterOrEqual(new_size)) > alloc->AllocationSizeMax)
     {   assert(pow2_size_new <= alloc->AllocationSizeMax);
         PAL_ZeroMemory(new_block, sizeof(PAL_MEMORY_BLOCK));
         return -1;
     }
     /* figure out the level index each size corresponds to */
-    PAL__BitScan_ui64_msb(pow2_size_old, &bit_index_old);
-    PAL__BitScan_ui64_msb(pow2_size_new, &bit_index_new);
+    PAL_BitScan_ui64_msb(pow2_size_old, &bit_index_old);
+    PAL_BitScan_ui64_msb(pow2_size_new, &bit_index_new);
     level_idx_old = alloc->LevelInfo[0].LevelBit - bit_index_old;
     level_idx_new = alloc->LevelInfo[0].LevelBit - bit_index_new;
 
@@ -3535,7 +3535,7 @@ PAL_MemoryAllocatorFree
     pal_uint64_t parent_index_mask;
     pal_sint32_t    buddy_offset[2] = { -1, +1 };
 
-    PAL__BitScan_ui64_msb(block->SizeInBytes, &bit_index);
+    PAL_BitScan_ui64_msb(block->SizeInBytes, &bit_index);
     level_index         = alloc->LevelInfo[0].LevelBit - bit_index;
     local_index         = block->BlockOffset >> alloc->LevelInfo[level_index].LevelBit;
     block_index         =(pal_uint32_t) local_index + alloc->LevelInfo[level_index].FirstBlockIndex;
@@ -3654,7 +3654,7 @@ PAL_MemoryAllocatorReset
     PAL_ZeroMemory(alloc->FreeCount  , PAL_MEMORY_ALLOCATOR_MAX_LEVELS * sizeof(pal_uint32_t));
 
     /* reset the level descriptor for the last level, in case it was modified because BytesReserved > 0 */
-    PAL__MemoryAllocatorDescribeLevel(last_level_info, alloc->LevelCount-1, last_level_info->LevelBit, 0);
+    PAL_MemoryAllocatorDescribeLevel(last_level_info, alloc->LevelCount-1, last_level_info->LevelBit, 0);
 
     /* mark the level-0 block as being free */
     alloc->StatusIndex[0] |= 1;
@@ -3678,7 +3678,7 @@ PAL_MemoryAllocatorReset
             assert(b.BlockOffset >= (alloc->MemorySize-alloc->BytesReserved));
         }
         /* update the LevelInfo for the last level so we don't even check the reserved words */
-        PAL__MemoryAllocatorDescribeLevel(last_level_info, alloc->LevelCount-1, last_level_info->LevelBit, block_count);
+        PAL_MemoryAllocatorDescribeLevel(last_level_info, alloc->LevelCount-1, last_level_info->LevelBit, block_count);
     }
 }
 
@@ -3767,10 +3767,10 @@ PAL_MemoryLayoutDefineStream
         assert(item_size > 0);
         return -1;
     }
-    if (stream_align <= 0 || PAL__IsPowerOfTwo(stream_align) == 0)
+    if (stream_align <= 0 || PAL_IsPowerOfTwo(stream_align) == 0)
     {   /* the alignment must be a power of two greater than zero */
         assert(stream_align > 0);
-        assert(PAL__IsPowerOfTwo(stream_align));
+        assert(PAL_IsPowerOfTwo(stream_align));
         return -1;
     }
     if (layout->StreamCount == 8)
@@ -3819,10 +3819,10 @@ PAL_DynamicBufferCreate
         assert(init->ElementSize != 0);
         return -1;
     }
-    if (init->ElementAlign == 0 || PAL__IsPowerOfTwo(init->ElementAlign) == 0)
+    if (init->ElementAlign == 0 || PAL_IsPowerOfTwo(init->ElementAlign) == 0)
     {   /* the alignment must be a non-zero power of two - use PAL_AlignOf(type) */
         assert(init->ElementAlign != 0);
-        assert(PAL__IsPowerOfTwo(init->ElementAlign));
+        assert(PAL_IsPowerOfTwo(init->ElementAlign));
         return -1;
     }
     if (init->InitialCommitment > init->MaxTotalCommitment)
@@ -4325,12 +4325,12 @@ PAL_HandleTableReset
         pal_uint64_t chunk_mask = 1ULL << chunk_bit;
         if (commit[chunk_word]  & chunk_mask)
         {   /* this chunk is committed; reset it */
-            pal_uint32_t *s = PAL__HandleTableGetChunkState(table, i);
-            pal_uint32_t *d = PAL__HandleTableGetChunkDense(table, i);
-            pal_uint16_t  k = PAL__HandleTableGetChunkItemCount(table, i);
+            pal_uint32_t *s = PAL_HandleTableGetChunkState(table, i);
+            pal_uint32_t *d = PAL_HandleTableGetChunkDense(table, i);
+            pal_uint16_t  k = PAL_HandleTableGetChunkItemCount(table, i);
             for (j = 0; j < k; ++j)
             {
-                state_index = PAL__HandleValueGetStateIndex(d[j]);
+                state_index = PAL_HandleValueGetStateIndex(d[j]);
                 s[state_index] =(s[state_index]+1) & PAL_HANDLE_GENER_MASK;
                 d[j] = state_index;
             }
@@ -4371,27 +4371,27 @@ PAL_HandleTableValidateIds
     
     /* load state for the first chunk */
     table_nspace = table->Namespace;
-    chunk_index  = PAL__HandleValueGetChunkIndex(handles[0]);
-    chunk_state  = PAL__HandleTableGetChunkState(table, chunk_index);
+    chunk_index  = PAL_HandleValueGetChunkIndex(handles[0]);
+    chunk_state  = PAL_HandleTableGetChunkState(table, chunk_index);
     range_beg    = 0;
     range_end    = 0;
     result       = 0;
 
     while (range_end < count)
     {   /* find the end of the run */
-        while (range_end < count && PAL__HandleValueGetChunkIndex(handles[range_end]) == chunk_index)
+        while (range_end < count && PAL_HandleValueGetChunkIndex(handles[range_end]) == chunk_index)
             range_end++;
 
         do
         {   /* there's a range [range_beg, range_end) of handles with the same chunk */
             handle_value = handles[range_beg++];
-            handle_live  = PAL__HandleValueGetLive(handle_value);
-            handle_nspace= PAL__HandleValueGetNamespace(handle_value);
-            handle_gener = PAL__HandleValueGetGeneration(handle_value);
-            state_index  = PAL__HandleValueGetStateIndex(handle_value);
+            handle_live  = PAL_HandleValueGetLive(handle_value);
+            handle_nspace= PAL_HandleValueGetNamespace(handle_value);
+            handle_gener = PAL_HandleValueGetGeneration(handle_value);
+            state_index  = PAL_HandleValueGetStateIndex(handle_value);
             state_value  = chunk_state[state_index];
-            state_live   = PAL__HandleStateGetLive(state_value);
-            state_gener  = PAL__HandleStateGetGeneration(state_value);
+            state_live   = PAL_HandleStateGetLive(state_value);
+            state_gener  = PAL_HandleStateGetGeneration(state_value);
             /* validate the handle value */
             if (handle_live == 0)
             {   assert(handle_live == 1 && "Detected invalid handle value");
@@ -4418,8 +4418,8 @@ PAL_HandleTableValidateIds
 
         if (range_end < count)
         {   /* load state for the next chunk */
-            chunk_index = PAL__HandleValueGetChunkIndex(handles[range_end]);
-            chunk_state = PAL__HandleTableGetChunkState(table, chunk_index);
+            chunk_index = PAL_HandleValueGetChunkIndex(handles[range_end]);
+            chunk_state = PAL_HandleTableGetChunkState(table, chunk_index);
             range_beg   = range_end;
             range_end   = range_end + 1;
         }
@@ -4434,19 +4434,19 @@ PAL_HandleTableDeleteChunkIds
     pal_uint32_t       chunk_index
 )
 {
-    pal_uint32_t        *state = PAL__HandleTableGetChunkState(table, chunk_index);
-    pal_uint32_t        *dense = PAL__HandleTableGetChunkDense(table, chunk_index);
-    pal_uint32_t         count = PAL__HandleTableGetChunkItemCount(table, chunk_index);
+    pal_uint32_t        *state = PAL_HandleTableGetChunkState(table, chunk_index);
+    pal_uint32_t        *dense = PAL_HandleTableGetChunkDense(table, chunk_index);
+    pal_uint32_t         count = PAL_HandleTableGetChunkItemCount(table, chunk_index);
     pal_uint32_t   state_index;
     pal_uint32_t             i;
     for (i = 0; i < count; ++i)
     {
-        state_index        = PAL__HandleValueGetStateIndex(dense[i]);
+        state_index        = PAL_HandleValueGetStateIndex(dense[i]);
         state[state_index] =(state[state_index]+1) & PAL_HANDLE_GENER_MASK;
         dense[i]           = state_index;
     }
-    PAL__HandleTableMarkChunkAvailable(table, chunk_index);
-    PAL__HandleTableSetChunkItemCount (table, chunk_index, 0);
+    PAL_HandleTableMarkChunkAvailable(table, chunk_index);
+    PAL_HandleTableSetChunkItemCount (table, chunk_index, 0);
 }
 
 PAL_API(void)
@@ -4456,17 +4456,17 @@ PAL_HandleTableRemoveChunkIds
     pal_uint32_t       chunk_index
 )
 {
-    pal_uint32_t        *state = PAL__HandleTableGetChunkState(table, chunk_index);
-    pal_uint32_t        *dense = PAL__HandleTableGetChunkDense(table, chunk_index);
-    pal_uint32_t         count = PAL__HandleTableGetChunkItemCount(table, chunk_index);
+    pal_uint32_t        *state = PAL_HandleTableGetChunkState(table, chunk_index);
+    pal_uint32_t        *dense = PAL_HandleTableGetChunkDense(table, chunk_index);
+    pal_uint32_t         count = PAL_HandleTableGetChunkItemCount(table, chunk_index);
     pal_uint32_t   state_index;
     pal_uint32_t             i;
     for (i = 0; i < count; ++i)
     {
-        state_index = PAL__HandleValueGetStateIndex(dense[i]);
+        state_index = PAL_HandleValueGetStateIndex(dense[i]);
         state[state_index] = 0; /* mark as unoccupied */
     }
-    PAL__HandleTableSetChunkItemCount(table, chunk_index, 0);
+    PAL_HandleTableSetChunkItemCount(table, chunk_index, 0);
 }
 
 PAL_API(int)
@@ -4503,7 +4503,7 @@ PAL_HandleTableVisit
         {
             do
             {   /* find the next set bit */
-                PAL__BitScan_ui64_lsb(commitw, &bit);
+                PAL_BitScan_ui64_lsb(commitw, &bit);
                 /* clear the set bit in the local copy */
                 commitw &= ~(1ULL << bit);
                 /* determine the absolute index of the chunk */
@@ -4525,8 +4525,8 @@ PAL_HandleTableVisit
      */
     for (i = 0; i < n_visit; ++i)
     {
-        desc.IdList = PAL__HandleTableGetChunkDense(table, chunk_index[i]);
-        desc.Data   = PAL__HandleTableGetChunkData (table, chunk_index[i]);
+        desc.IdList = PAL_HandleTableGetChunkDense(table, chunk_index[i]);
+        desc.Data   = PAL_HandleTableGetChunkData (table, chunk_index[i]);
         desc.Index  = chunk_index[i];
         desc.Count  = chunk_count[i];
         PAL_MemoryViewInit(&view, layout, desc.Data, PAL_HANDLE_CHUNK_CAPACITY, chunk_count[i]);
@@ -4553,13 +4553,13 @@ PAL_HandleTableCreateIds
     pal_uint16_t  index_list[PAL_HANDLE_CHUNK_COUNT];
     pal_uint16_t  count_list[PAL_HANDLE_CHUNK_COUNT];
 
-    if (PAL__HandleTableEnsure(table, count, index_list, count_list, &chunk_count) != 0)
+    if (PAL_HandleTableEnsure(table, count, index_list, count_list, &chunk_count) != 0)
     {   /* insufficient capacity, or allocation failure */
         return -1;
     }
     for (i = 0; i < chunk_count; ++i)
     {   /* allocate as many IDs as possible within the chunk */
-        offset += PAL__HandleTableCreateIdsInChunk(table, handles, offset, nspace, index_list[i], count_list[i]);
+        offset += PAL_HandleTableCreateIdsInChunk(table, handles, offset, nspace, index_list[i], count_list[i]);
     }
     return 0;
 }
@@ -4589,18 +4589,18 @@ PAL_HandleTableDeleteIds
     }
 
     /* load state for the first chunk */
-    chunk_index  = PAL__HandleValueGetChunkIndex(handles[0]);
-    chunk_datap  = PAL__HandleTableGetChunkData (table, chunk_index);
-    chunk_state  = PAL__HandleTableGetChunkState(table, chunk_index);
-    chunk_dense  = PAL__HandleTableGetChunkDense(table, chunk_index);
-    chunk_count  = PAL__HandleTableGetChunkItemCount(table, chunk_index);
+    chunk_index  = PAL_HandleValueGetChunkIndex(handles[0]);
+    chunk_datap  = PAL_HandleTableGetChunkData (table, chunk_index);
+    chunk_state  = PAL_HandleTableGetChunkState(table, chunk_index);
+    chunk_dense  = PAL_HandleTableGetChunkDense(table, chunk_index);
+    chunk_count  = PAL_HandleTableGetChunkItemCount(table, chunk_index);
     range_beg    = 0;
     range_end    = 0;
     PAL_MemoryViewInit(&view, chunk_layout, chunk_datap, PAL_HANDLE_CHUNK_CAPACITY, chunk_count);
 
     while (range_end < count)
     {   /* find the end of the run */
-        while (range_end < count && PAL__HandleValueGetChunkIndex(handles[range_end]) == chunk_index)
+        while (range_end < count && PAL_HandleValueGetChunkIndex(handles[range_end]) == chunk_index)
             range_end++;
 
         /* there's a range [range_beg, range_end) of values with the same chunk */
@@ -4609,28 +4609,28 @@ PAL_HandleTableDeleteIds
         /* use the appropriate delete function to minimize data movement */
         if (delete_count == PAL_HANDLE_CHUNK_CAPACITY)
         {   /* the entire chunk is allocated and is being deleted */
-            PAL__HandleTableDeleteIdsInChunk_Full(table, chunk_index, chunk_state, chunk_dense);
+            PAL_HandleTableDeleteIdsInChunk_Full(table, chunk_index, chunk_state, chunk_dense);
         }
         else if (delete_count == chunk_count)
         {   /* the entire chunk is not allocated, but all allocated items are being deleted */
-            PAL__HandleTableDeleteIdsInChunk_All (table, handles, range_beg, range_end, chunk_index, chunk_state, chunk_dense);
+            PAL_HandleTableDeleteIdsInChunk_All (table, handles, range_beg, range_end, chunk_index, chunk_state, chunk_dense);
         }
         else if (delete_count == 1)
         {   /* only a single item is being deleted from the chunk */
-            PAL__HandleTableDeleteIdsInChunk_One (table, handles, range_beg, chunk_index, chunk_count, chunk_state, chunk_dense, &view);
+            PAL_HandleTableDeleteIdsInChunk_One (table, handles, range_beg, chunk_index, chunk_count, chunk_state, chunk_dense, &view);
         }
         else
         {   /* multiple items are being deleted from the chunk, the chunk remains partially used */
-            PAL__HandleTableDeleteIdsInChunk_Many(table, handles, range_beg, range_end, chunk_index, chunk_count, chunk_state, chunk_dense, &view);
+            PAL_HandleTableDeleteIdsInChunk_Many(table, handles, range_beg, range_end, chunk_index, chunk_count, chunk_state, chunk_dense, &view);
         }
 
         if (range_end < count)
         {   /* load state for the next chunk */
-            chunk_index = PAL__HandleValueGetChunkIndex(handles[range_end]);
-            chunk_datap = PAL__HandleTableGetChunkData (table, chunk_index);
-            chunk_state = PAL__HandleTableGetChunkState(table, chunk_index);
-            chunk_dense = PAL__HandleTableGetChunkDense(table, chunk_index);
-            chunk_count = PAL__HandleTableGetChunkItemCount(table, chunk_index);
+            chunk_index = PAL_HandleValueGetChunkIndex(handles[range_end]);
+            chunk_datap = PAL_HandleTableGetChunkData (table, chunk_index);
+            chunk_state = PAL_HandleTableGetChunkState(table, chunk_index);
+            chunk_dense = PAL_HandleTableGetChunkDense(table, chunk_index);
+            chunk_count = PAL_HandleTableGetChunkItemCount(table, chunk_index);
             range_beg   = range_end;
             range_end   = range_end + 1;
             PAL_MemoryViewInit(&view, chunk_layout, chunk_datap, PAL_HANDLE_CHUNK_CAPACITY, chunk_count);
@@ -4662,31 +4662,31 @@ PAL_HandleTableInsertIds
     }
 
     /* load state for the first chunk */
-    chunk_index = PAL__HandleValueGetChunkIndex(handles[0]);
-    chunk_datap = PAL__HandleTableGetChunkData (table, chunk_index);
-    chunk_state = PAL__HandleTableGetChunkState(table, chunk_index);
-    chunk_dense = PAL__HandleTableGetChunkDense(table, chunk_index);
-    chunk_count = PAL__HandleTableGetChunkItemCount(table, chunk_index);
+    chunk_index = PAL_HandleValueGetChunkIndex(handles[0]);
+    chunk_datap = PAL_HandleTableGetChunkData (table, chunk_index);
+    chunk_state = PAL_HandleTableGetChunkState(table, chunk_index);
+    chunk_dense = PAL_HandleTableGetChunkDense(table, chunk_index);
+    chunk_count = PAL_HandleTableGetChunkItemCount(table, chunk_index);
     range_beg   = 0;
     range_end   = 0;
     PAL_MemoryViewInit(&view, chunk_layout, chunk_datap, PAL_HANDLE_CHUNK_CAPACITY, chunk_count);
 
     while (range_end < count)
     {   /* find the end of the run */
-        while (range_end < count && PAL__HandleValueGetChunkIndex(handles[range_end]) == chunk_index)
+        while (range_end < count && PAL_HandleValueGetChunkIndex(handles[range_end]) == chunk_index)
             range_end++;
 
         /* there's a range [range_beg, range_end) of values with the same chunk */
         /* TODO: should return an error if chunk commit failed */
-        PAL__HandleTableInsertIdsInChunk(table, handles, range_beg, range_end, chunk_index, chunk_count, chunk_state, chunk_dense);
+        PAL_HandleTableInsertIdsInChunk(table, handles, range_beg, range_end, chunk_index, chunk_count, chunk_state, chunk_dense);
 
         if (range_end < count)
         {   /* load state for the next chunk */
-            chunk_index = PAL__HandleValueGetChunkIndex(handles[range_end]);
-            chunk_datap = PAL__HandleTableGetChunkData (table, chunk_index);
-            chunk_state = PAL__HandleTableGetChunkState(table, chunk_index);
-            chunk_dense = PAL__HandleTableGetChunkDense(table, chunk_index);
-            chunk_count = PAL__HandleTableGetChunkItemCount(table, chunk_index);
+            chunk_index = PAL_HandleValueGetChunkIndex(handles[range_end]);
+            chunk_datap = PAL_HandleTableGetChunkData (table, chunk_index);
+            chunk_state = PAL_HandleTableGetChunkState(table, chunk_index);
+            chunk_dense = PAL_HandleTableGetChunkDense(table, chunk_index);
+            chunk_count = PAL_HandleTableGetChunkItemCount(table, chunk_index);
             range_beg   = range_end;
             range_end   = range_end + 1;
             PAL_MemoryViewInit(&view, chunk_layout, chunk_datap, PAL_HANDLE_CHUNK_CAPACITY, chunk_count);
@@ -4720,18 +4720,18 @@ PAL_HandleTableRemoveIds
     }
 
     /* load state for the first chunk */
-    chunk_index = PAL__HandleValueGetChunkIndex(handles[0]);
-    chunk_datap = PAL__HandleTableGetChunkData (table, chunk_index);
-    chunk_state = PAL__HandleTableGetChunkState(table, chunk_index);
-    chunk_dense = PAL__HandleTableGetChunkDense(table, chunk_index);
-    chunk_count = PAL__HandleTableGetChunkItemCount(table, chunk_index);
+    chunk_index = PAL_HandleValueGetChunkIndex(handles[0]);
+    chunk_datap = PAL_HandleTableGetChunkData (table, chunk_index);
+    chunk_state = PAL_HandleTableGetChunkState(table, chunk_index);
+    chunk_dense = PAL_HandleTableGetChunkDense(table, chunk_index);
+    chunk_count = PAL_HandleTableGetChunkItemCount(table, chunk_index);
     range_beg   = 0;
     range_end   = 0;
     PAL_MemoryViewInit(&view, chunk_layout, chunk_datap, PAL_HANDLE_CHUNK_CAPACITY, chunk_count);
 
     while (range_end < count)
     {   /* find the end of the run */
-        while (range_end < count && PAL__HandleValueGetChunkIndex(handles[range_end]) == chunk_index)
+        while (range_end < count && PAL_HandleValueGetChunkIndex(handles[range_end]) == chunk_index)
             range_end++;
 
         /* there's a range [range_beg, range_end) of values with the same chunk */
@@ -4740,28 +4740,28 @@ PAL_HandleTableRemoveIds
         /* use the appropriate remove function to minimize data movement */
         if (remove_count == PAL_HANDLE_CHUNK_CAPACITY)
         {   /* the entire chunk is allocated and is being deleted */
-            PAL__HandleTableRemoveIdsInChunk_Full(table, chunk_index, chunk_state);
+            PAL_HandleTableRemoveIdsInChunk_Full(table, chunk_index, chunk_state);
         }
         else if (remove_count == chunk_count)
         {   /* the entire chunk is not allocated, but all allocated items are being deleted */
-            PAL__HandleTableRemoveIdsInChunk_All (table, handles, range_beg, range_end, chunk_index, chunk_state);
+            PAL_HandleTableRemoveIdsInChunk_All (table, handles, range_beg, range_end, chunk_index, chunk_state);
         }
         else if (remove_count == 1)
         {   /* only a single item is being removed from the chunk */
-            PAL__HandleTableRemoveIdsInChunk_One (table, handles, range_beg, chunk_index, chunk_count, chunk_state, chunk_dense, &view);
+            PAL_HandleTableRemoveIdsInChunk_One (table, handles, range_beg, chunk_index, chunk_count, chunk_state, chunk_dense, &view);
         }
         else
         {   /* multiple items are being removed from the chunk, the chunk remains partially used */
-            PAL__HandleTableRemoveIdsInChunk_Many(table, handles, range_beg, range_end, chunk_index, chunk_count, chunk_state, chunk_dense, &view);
+            PAL_HandleTableRemoveIdsInChunk_Many(table, handles, range_beg, range_end, chunk_index, chunk_count, chunk_state, chunk_dense, &view);
         }
 
         if (range_end < count)
         {   /* load state for the next chunk */
-            chunk_index = PAL__HandleValueGetChunkIndex(handles[range_end]);
-            chunk_datap = PAL__HandleTableGetChunkData (table, chunk_index);
-            chunk_state = PAL__HandleTableGetChunkState(table, chunk_index);
-            chunk_dense = PAL__HandleTableGetChunkDense(table, chunk_index);
-            chunk_count = PAL__HandleTableGetChunkItemCount(table, chunk_index);
+            chunk_index = PAL_HandleValueGetChunkIndex(handles[range_end]);
+            chunk_datap = PAL_HandleTableGetChunkData (table, chunk_index);
+            chunk_state = PAL_HandleTableGetChunkState(table, chunk_index);
+            chunk_dense = PAL_HandleTableGetChunkDense(table, chunk_index);
+            chunk_count = PAL_HandleTableGetChunkItemCount(table, chunk_index);
             range_beg   = range_end;
             range_end   = range_end + 1;
             PAL_MemoryViewInit(&view, chunk_layout, chunk_datap, PAL_HANDLE_CHUNK_CAPACITY, chunk_count);
@@ -4778,10 +4778,10 @@ PAL_HandleTableGetChunkForIndex
     struct PAL_MEMORY_VIEW         *view
 )
 {
-    chunk->IdList = PAL__HandleTableGetChunkDense(table, index);
-    chunk->Data   = PAL__HandleTableGetChunkData (table, index);
+    chunk->IdList = PAL_HandleTableGetChunkDense(table, index);
+    chunk->Data   = PAL_HandleTableGetChunkData (table, index);
     chunk->Index  = index;
-    chunk->Count  = PAL__HandleTableGetChunkItemCount(table, index);
+    chunk->Count  = PAL_HandleTableGetChunkItemCount(table, index);
     PAL_MemoryViewInit(view, PAL_HandleTableGetDataLayout(table), chunk->Data, PAL_HANDLE_CHUNK_CAPACITY, chunk->Count);
     return chunk;
 }
@@ -4797,17 +4797,17 @@ PAL_HandleTableGetChunkForHandle
 )
 {
     PAL_MEMORY_LAYOUT *layout = PAL_HandleTableGetDataLayout (table);
-    pal_uint32_t  chunk_index = PAL__HandleValueGetChunkIndex(handle);
-    pal_uint32_t  state_index = PAL__HandleValueGetStateIndex(handle);
-    pal_uint32_t   handle_gen = PAL__HandleValueGetGeneration(handle);
-    pal_uint8_t         *data = PAL__HandleTableGetChunkData (table, chunk_index);
-    pal_uint32_t       *state = PAL__HandleTableGetChunkState(table, chunk_index);
-    pal_uint32_t       *dense = PAL__HandleTableGetChunkState(table, chunk_index);
+    pal_uint32_t  chunk_index = PAL_HandleValueGetChunkIndex(handle);
+    pal_uint32_t  state_index = PAL_HandleValueGetStateIndex(handle);
+    pal_uint32_t   handle_gen = PAL_HandleValueGetGeneration(handle);
+    pal_uint8_t         *data = PAL_HandleTableGetChunkData (table, chunk_index);
+    pal_uint32_t       *state = PAL_HandleTableGetChunkState(table, chunk_index);
+    pal_uint32_t       *dense = PAL_HandleTableGetChunkState(table, chunk_index);
     pal_uint32_t  state_value = state[state_index];
-    pal_uint32_t   state_live = PAL__HandleStateGetLive(state_value);
-    pal_uint32_t    state_gen = PAL__HandleStateGetGeneration(state_value);
-    pal_uint32_t  dense_index = PAL__HandleStateGetDenseIndex(state_value);
-    pal_uint16_t  chunk_count = PAL__HandleTableGetChunkItemCount(table, chunk_index);
+    pal_uint32_t   state_live = PAL_HandleStateGetLive(state_value);
+    pal_uint32_t    state_gen = PAL_HandleStateGetGeneration(state_value);
+    pal_uint32_t  dense_index = PAL_HandleStateGetDenseIndex(state_value);
+    pal_uint16_t  chunk_count = PAL_HandleTableGetChunkItemCount(table, chunk_index);
 
     if (state_live && state_gen == handle_gen)
     {   /* the handle is valid */

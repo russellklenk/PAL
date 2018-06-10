@@ -290,39 +290,20 @@
     ((_table)->ChunkCounts[(_index)] = (_count))
 #endif
 
-/* @summary Retrieve the number of items stored in a specific handle table chunk.
- * @param _table The PAL_HANDLE_TABLE to query.
- * @param _index The zero-based index of the chunk to query.
- */
-#ifndef PAL__HandleTableGetChunkItemCount
-#define PAL__HandleTableGetChunkItemCount(_table, _index)                      \
-    PAL_HandleTableGetChunkItemCount((_table), (_index))
-#endif
-
-/* @summary Set the number of items stored in a specific handle table chunk.
- * @param _table The PAL_HANDLE_TABLE to update.
- * @param _index The zero-based index of the chunk to update.
- * @param _count The number of items stored in the specified chunk.
- */
-#ifndef PAL__HandleTableSetChunkItemCount
-#define PAL__HandleTableSetChunkItemCount(_table, _index, _count)              \
-    PAL_HandleTableSetChunkItemCount((_table), (_index), (_count))
-#endif
-
 /* @summary Retrieve the live status for a handle table chunk state value.
  * @param _state The state value to query.
  * @return Non-zero if the state value is live.
  */
-#ifndef PAL__HandleStateGetLive
-#define PAL__HandleStateGetLive(_state)                                        \
+#ifndef PAL_HandleStateGetLive
+#define PAL_HandleStateGetLive(_state)                                         \
     (((_state) & PAL_HANDLE_VALID_MASK_PACKED) >> PAL_HANDLE_VALID_SHIFT)
 #endif
 
 /* @summary Retrieve the generation value associated with a handle chunk state value.
  * @param _state The state value to query.
  */
-#ifndef PAL__HandleStateGetGeneration
-#define PAL__HandleStateGetGeneration(_state)                                  \
+#ifndef PAL_HandleStateGetGeneration
+#define PAL_HandleStateGetGeneration(_state)                                   \
     (((_state) & PAL_HANDLE_GENER_MASK_PACKED) >> PAL_HANDLE_GENER_SHIFT)
 #endif
 
@@ -330,8 +311,8 @@
  * @param _state The state value to query.
  * @return The dense data index value bound to the state slot.
  */
-#ifndef PAL__HandleStateGetDenseIndex
-#define PAL__HandleStateGetDenseIndex(_state)                                  \
+#ifndef PAL_HandleStateGetDenseIndex
+#define PAL_HandleStateGetDenseIndex(_state)                                   \
     (((_state) & PAL_HANDLE_INDEX_MASK_PACKED) >> PAL_HANDLE_INDEX_SHIFT)
 #endif
 
@@ -339,40 +320,40 @@
  * @param _handle The handle to query.
  * @return Non-zero if the handle has its valid bit set.
  */
-#ifndef PAL__HandleValueGetLive
-#define PAL__HandleValueGetLive(_handle)                                       \
+#ifndef PAL_HandleValueGetLive
+#define PAL_HandleValueGetLive(_handle)                                        \
     (((_handle) & PAL_HANDLE_VALID_MASK_PACKED) >> PAL_HANDLE_VALID_SHIFT)
 #endif
 
 /* @summary Retrieve the namespace or type value from a handle.
  * @param _handle The handle to query.
  */
-#ifndef PAL__HandleValueGetNamespace
-#define PAL__HandleValueGetNamespace(_handle)                                  \
+#ifndef PAL_HandleValueGetNamespace
+#define PAL_HandleValueGetNamespace(_handle)                                   \
     (((_handle) & PAL_HANDLE_NAMES_MASK_PACKED) >> PAL_HANDLE_NAMES_SHIFT)
 #endif
 
 /* @summary Retrieve the generation value from a handle.
  * @param _handle The handle to query.
  */
-#ifndef PAL__HandleValueGetGeneration
-#define PAL__HandleValueGetGeneration(_handle)                                 \
+#ifndef PAL_HandleValueGetGeneration
+#define PAL_HandleValueGetGeneration(_handle)                                  \
     (((_handle) & PAL_HANDLE_GENER_MASK_PACKED) >> PAL_HANDLE_GENER_SHIFT)
 #endif
 
 /* @summary Retrieve the chunk index value from a handle.
  * @param _handle The handle to query.
  */
-#ifndef PAL__HandleValueGetChunkIndex
-#define PAL__HandleValueGetChunkIndex(_handle)                                 \
+#ifndef PAL_HandleValueGetChunkIndex
+#define PAL_HandleValueGetChunkIndex(_handle)                                  \
     (((_handle) & PAL_HANDLE_CHUNK_MASK_PACKED) >> PAL_HANDLE_CHUNK_SHIFT)
 #endif
 
 /* @summary Retrieve the state value index from a handle.
  * @param _handle The handle to query.
  */
-#ifndef PAL__HandleValueGetStateIndex
-#define PAL__HandleValueGetStateIndex(_handle)                                 \
+#ifndef PAL_HandleValueGetStateIndex
+#define PAL_HandleValueGetStateIndex(_handle)                                  \
     (((_handle) & PAL_HANDLE_INDEX_MASK_PACKED) >> PAL_HANDLE_INDEX_SHIFT)
 #endif
 
@@ -383,8 +364,8 @@
  * @param _gener The generation value for the dense index.
  * @return A 32-bit unsigned integer value representing the handle.
  */
-#ifndef PAL__HandleValuePack
-#define PAL__HandleValuePack(_chunk, _state, _names, _gener)                   \
+#ifndef PAL_HandleValuePack
+#define PAL_HandleValuePack(_chunk, _state, _names, _gener)                    \
     (((PAL_HANDLE_VALID_MASK_PACKED))     |                                    \
      ((_chunk) << PAL_HANDLE_CHUNK_SHIFT) |                                    \
      ((_state) << PAL_HANDLE_INDEX_SHIFT) |                                    \

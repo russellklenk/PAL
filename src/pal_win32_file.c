@@ -21,7 +21,7 @@
  * @return The FILETIME timestamp expressed as a Unix timestamp.
  */
 static PAL_INLINE pal_sint64_t
-PAL__FILETIMEToUnixTime
+PAL_FILETIMEToUnixTime
 (
     FILETIME ft
 )
@@ -37,7 +37,7 @@ PAL__FILETIMEToUnixTime
  * @return The FILETIME timestamp expressed as a Unix timestamp.
  */
 static PAL_INLINE pal_sint64_t
-PAL__FILETIMEToUnixTimeRaw
+PAL_FILETIMEToUnixTimeRaw
 (
     pal_sint64_t filetime
 )
@@ -55,7 +55,7 @@ PAL__FILETIMEToUnixTimeRaw
  * @return This function always returns zero to indicate success.
  */
 static int
-PAL__ExtractNativePathParts
+PAL_ExtractNativePathParts
 (
     struct PAL_PATH_PARTS *parts,
     pal_char_t         *path_buf, 
@@ -137,7 +137,7 @@ PAL__ExtractNativePathParts
  * @return Zero if the search completed successfully, greater than zero if the search was halted explicitly, or less than zero if the search was halted due to an error.
  */
 static int
-PAL__FileEnumeratorSearch
+PAL_FileEnumeratorSearch
 (
     struct PAL_FILE_ENUMERATOR *fsenum, 
     pal_char_t                *pathend,
@@ -195,9 +195,9 @@ PAL__FileEnumeratorSearch
             if (do_dirs)
             {   /* populate the PAL_FILE_INFO and report */
                 finfo.FileSize     = 0;
-                finfo.CreationTime = PAL__FILETIMEToUnixTime(fdata.ftCreationTime);
-                finfo.AccessTime   = PAL__FILETIMEToUnixTime(fdata.ftLastAccessTime);
-                finfo.WriteTime    = PAL__FILETIMEToUnixTime(fdata.ftLastWriteTime);
+                finfo.CreationTime = PAL_FILETIMEToUnixTime(fdata.ftCreationTime);
+                finfo.AccessTime   = PAL_FILETIMEToUnixTime(fdata.ftLastAccessTime);
+                finfo.WriteTime    = PAL_FILETIMEToUnixTime(fdata.ftLastWriteTime);
                 finfo.Alignment    = 0;
                 finfo.Attributes   = fdata.dwFileAttributes;
                 (void) StringCchCatW(newpend, PAL_MAX_LONG_PATH_CHARS, fdata.cFileName);
@@ -210,7 +210,7 @@ PAL__FileEnumeratorSearch
             }
             if (do_recurse)
             {   /* recurse into this subdirectory - newsend-1 makes it point at the * */
-                if ((result = PAL__FileEnumeratorSearch(fsenum, newpend, newsend-1, fdata.cFileName)) != 0)
+                if ((result = PAL_FileEnumeratorSearch(fsenum, newpend, newsend-1, fdata.cFileName)) != 0)
                 {   /* the search failed or was halted somewhere down below. clean up. */
                    *pathend = L'\0'; *srchend = L'\0';
                     FindClose(fhand);
@@ -223,9 +223,9 @@ PAL__FileEnumeratorSearch
             fsize.LowPart      = fdata.nFileSizeLow;
             fsize.HighPart     = fdata.nFileSizeHigh;
             finfo.FileSize     =(pal_sint64_t) fsize.QuadPart;
-            finfo.CreationTime = PAL__FILETIMEToUnixTime(fdata.ftCreationTime);
-            finfo.AccessTime   = PAL__FILETIMEToUnixTime(fdata.ftLastAccessTime);
-            finfo.WriteTime    = PAL__FILETIMEToUnixTime(fdata.ftLastWriteTime);
+            finfo.CreationTime = PAL_FILETIMEToUnixTime(fdata.ftCreationTime);
+            finfo.AccessTime   = PAL_FILETIMEToUnixTime(fdata.ftLastAccessTime);
+            finfo.WriteTime    = PAL_FILETIMEToUnixTime(fdata.ftLastWriteTime);
             finfo.Alignment    = 4096;
             finfo.Attributes   = fdata.dwFileAttributes;
             (void) StringCchCatW(newpend, PAL_MAX_LONG_PATH_CHARS, fdata.cFileName);
@@ -289,7 +289,7 @@ PAL_PathParse
                     parts->Root      = path_buf + 4;
                     parts->RootEnd   = path_buf + 6;
                     parts->PathFlags = PAL_PATH_FLAG_ABSOLUTE | PAL_PATH_FLAG_LONG | PAL_PATH_FLAG_ROOT;
-                    return PAL__ExtractNativePathParts(parts, path_buf, path_end);
+                    return PAL_ExtractNativePathParts(parts, path_buf, path_end);
                 }
                 else if ((inp_chars >= 6) && (path_buf[4] == L'.' && path_buf[5] == L'\\'))
                 {   /* long device path */
@@ -328,21 +328,21 @@ PAL_PathParse
             parts->Root      = path_buf;
             parts->RootEnd   = path_buf + 1;
             parts->PathFlags = PAL_PATH_FLAG_ABSOLUTE | PAL_PATH_FLAG_ROOT;
-            return PAL__ExtractNativePathParts(parts, path_buf, path_end);
+            return PAL_ExtractNativePathParts(parts, path_buf, path_end);
         }
         else if (((path_buf[0] >= L'A' && path_buf[0] <= L'Z') || (path_buf[0] >= L'a' && path_buf[0] <= L'z')) && (path_buf[1] == L':'))
         {   /* absolute DOS path with a drive letter root */
             parts->Root      = path_buf;
             parts->RootEnd   = path_buf + 2;
             parts->PathFlags = PAL_PATH_FLAG_ABSOLUTE | PAL_PATH_FLAG_ROOT;
-            return PAL__ExtractNativePathParts(parts, path_buf, path_end);
+            return PAL_ExtractNativePathParts(parts, path_buf, path_end);
         }
         else
         {   /* assume that this is a relative path */
             parts->Root      = path_buf;
             parts->RootEnd   = path_buf;
             parts->PathFlags = PAL_PATH_FLAG_RELATIVE;
-            return PAL__ExtractNativePathParts(parts, path_buf, path_end);
+            return PAL_ExtractNativePathParts(parts, path_buf, path_end);
         }
     }
     else if (inp_chars == 2)
@@ -410,7 +410,7 @@ scan_for_end_of_root:
     {   /* no additional components will be found */
         return 0;
     }
-    return PAL__ExtractNativePathParts(parts, path_buf, path_end);
+    return PAL_ExtractNativePathParts(parts, path_buf, path_end);
 }
 
 PAL_API(int)
@@ -1020,7 +1020,7 @@ PAL_FileEnumeratorExecute
     {   /* the enumerator is invalid */
         return -1;
     }
-    return PAL__FileEnumeratorSearch(fsenum, fsenum->RelativePath-1, fsenum->SearchEnd, L"");
+    return PAL_FileEnumeratorSearch(fsenum, fsenum->RelativePath-1, fsenum->SearchEnd, L"");
 }
 
 PAL_API(int)
@@ -1132,9 +1132,9 @@ PAL_FileStatHandle
     /* retrieve the attributes of the file or directory */
     if (GetFileInformationByHandleEx(fd, FileBasicInfo, &fbi, sizeof(FILE_BASIC_INFO)))
     {   /* save the file attribute information for the user */
-        result->CreationTime = PAL__FILETIMEToUnixTimeRaw(fbi.CreationTime.QuadPart);
-        result->AccessTime   = PAL__FILETIMEToUnixTimeRaw(fbi.LastAccessTime.QuadPart);
-        result->WriteTime    = PAL__FILETIMEToUnixTimeRaw(fbi.LastWriteTime.QuadPart);
+        result->CreationTime = PAL_FILETIMEToUnixTimeRaw(fbi.CreationTime.QuadPart);
+        result->AccessTime   = PAL_FILETIMEToUnixTimeRaw(fbi.LastAccessTime.QuadPart);
+        result->WriteTime    = PAL_FILETIMEToUnixTimeRaw(fbi.LastWriteTime.QuadPart);
         result->Attributes   =(pal_uint32_t) fbi.FileAttributes;
     }
     else
@@ -1609,7 +1609,7 @@ PAL_FileRead_TaskMain
     DWORD               amount = data->ReadAmount;
     DWORD          transferred = 0;
 
-    req = PAL__TaskIoWorkerAcquireIoRequest(args->WorkerPool);
+    req = PAL_TaskIoWorkerAcquireIoRequest(args->WorkerPool);
     req->File     = fd;
     req->Type     = PAL_ASYNCIO_REQUEST_TYPE_FILE_READ;
     req->State    = PAL_ASYNCIO_REQUEST_STATE_SUBMITTED;
@@ -1619,7 +1619,7 @@ PAL_FileRead_TaskMain
     req->Overlapped.OffsetHigh =(DWORD)((abs_offset >> 32) & 0xFFFFFFFFUL);
     if (ReadFile(fd, data->Destination, amount, &transferred, &req->Overlapped))
     {   /* the read completed synchronously - likely the data was in-cache */
-        PAL__TaskIoWorkerReleaseIoRequest(args->WorkerPool, req);
+        PAL_TaskIoWorkerReleaseIoRequest(args->WorkerPool, req);
         rdata.File           = data->File;
         rdata.Destination    = data->Destination;
         rdata.ReadOffset     = abs_offset;
@@ -1642,7 +1642,7 @@ PAL_FileRead_TaskMain
         } return;
     case ERROR_HANDLE_EOF:
         { /* end-of-file was reached. complete the task. */
-          PAL__TaskIoWorkerReleaseIoRequest(args->WorkerPool, req);
+          PAL_TaskIoWorkerReleaseIoRequest(args->WorkerPool, req);
           rdata.File           = data->File;
           rdata.Destination    = data->Destination;
           rdata.ReadOffset     = abs_offset;
@@ -1656,7 +1656,7 @@ PAL_FileRead_TaskMain
         } return;
     default:
         { /* an actual error occurred. complete the task. */
-          PAL__TaskIoWorkerReleaseIoRequest(args->WorkerPool, req);
+          PAL_TaskIoWorkerReleaseIoRequest(args->WorkerPool, req);
           rdata.File           = data->File;
           rdata.Destination    = data->Destination;
           rdata.ReadOffset     = abs_offset;
@@ -1685,7 +1685,7 @@ PAL_FileWrite_TaskMain
     DWORD                amount = data->WriteAmount;
     DWORD           transferred = 0;
 
-    req = PAL__TaskIoWorkerAcquireIoRequest(args->WorkerPool);
+    req = PAL_TaskIoWorkerAcquireIoRequest(args->WorkerPool);
     req->File     = fd;
     req->Type     = PAL_ASYNCIO_REQUEST_TYPE_FILE_WRITE;
     req->State    = PAL_ASYNCIO_REQUEST_STATE_SUBMITTED;
@@ -1695,7 +1695,7 @@ PAL_FileWrite_TaskMain
     req->Overlapped.OffsetHigh =(DWORD)((abs_offset >> 32) & 0xFFFFFFFFUL);
     if (WriteFile(fd, data->Source, amount, &transferred, &req->Overlapped))
     {   /* the write completed synchronously */
-        PAL__TaskIoWorkerReleaseIoRequest(args->WorkerPool, req);
+        PAL_TaskIoWorkerReleaseIoRequest(args->WorkerPool, req);
         rdata.File           = data->File;
         rdata.Source         = data->Source;
         rdata.WriteOffset    = abs_offset;
@@ -1718,7 +1718,7 @@ PAL_FileWrite_TaskMain
         } return;
     default:
         { /* an actual error occurred. complete the task. */
-          PAL__TaskIoWorkerReleaseIoRequest(args->WorkerPool, req);
+          PAL_TaskIoWorkerReleaseIoRequest(args->WorkerPool, req);
           rdata.File           = data->File;
           rdata.Source         = data->Source;
           rdata.WriteOffset    = abs_offset;
