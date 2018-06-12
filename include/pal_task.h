@@ -9,9 +9,15 @@
 #include "pal.h"
 #endif
 
+/* @summary Define 
+ */
+#ifndef PAL_TASK_CONSTANTS
+#endif
+
 /* @summary Forward-declare the types exported by this module.
  * The type definitions are included in the platform-specific header.
  */
+struct  PAL_TASK;
 struct  PAL_TASK_ARGS;
 struct  PAL_TASK_DATA;
 struct  PAL_TASK_POOL;
@@ -50,365 +56,173 @@ typedef void (*PAL_TaskMain_Func)
     struct PAL_TASK_ARGS *args
 );
 
+/* @summary Define the data supplied to a task during execution.
+ * This data can be used to spawn additional root or child tasks.
+ */
+typedef struct PAL_TASK_ARGS {
+    struct PAL_TASK_WORKER_POOL  *WorkerPool;           /* The thread pool used for executing tasks. Used to wait for a task to complete. */
+    struct PAL_TASK_POOL         *ExecutionPool;        /* The PAL_TASK_POOL bound to the thread executing the task. Used to spawn new tasks. */
+    void                         *TaskArguments;        /* The argument data associated with the specific task that is executing. */
+    void                         *ThreadContext;        /* Opaque data associated with the thread that is executing the task (the result stored in the thread_context argument set by PAL_TaskWorkerInit_Func). */
+    PAL_TASKID                    TaskId;               /* The unique identifier for the task. */
+    pal_uint32_t                  ThreadId;             /* The operating system identifier of the thread executing the task. */
+    pal_uint32_t                  ThreadIndex;          /* The zero-based index of the pool bound to the thread that is executing the task. */
+    pal_uint32_t                  ThreadCount;          /* The total number of threads that execute and/or define tasks. */
+} PAL_TASK_ARGS;
+
+/* @summary Define the data that represents a task. 
+ * The TaskId field is populated by the call to PAL_TaskCreate. 
+ * The application must set the ParentId, TaskMain and TaskData fields.
+ */
+typedef struct PAL_TASK {
+    PAL_TaskMain_Func             TaskMain;             /* The function to run when the task is executed. */
+    PAL_TASKID                    ParentId;             /* The identifier of the parent task, if any. If the task is a root task with no parent, specify PAL_TASKID_NONE. */
+    PAL_TASKID                    TaskId;               /* The unique identifier for the task. The application should not modify this field. */
+    pal_uint8_t                   TaskData[48];         /* Data specific to the task passed to TaskMain as the PAL_TASK_ARGS::TaskArguments field. This data has 16-byte alignment. */
+} PAL_TASK;
+
+/* @summary Define the data used to describe a type of task pool.
+ * A task pool maintains all of the storage for tasks, and is bound to a single thread.
+ * The bound thread is the only thread that can create tasks using the pool.
+ */
+typedef struct PAL_TASK_POOL_INIT {
+    pal_sint32_t                  PoolTypeId;           /* One of the values of the PAL_TASK_POOL_TYPE_ID enumeration. */
+    pal_uint32_t                  PoolCount;            /* The number of pools of this type that are required. */
+    pal_uint32_t                  PoolFlags;            /* One or more bitwise OR'd values from the PAL_TASK_POOL_FLAGS enumeration. */
+    pal_uint32_t                  PreCommitTasks;       /* The number of tasks that should be pre-committed with backing physical memory. */
+} PAL_TASK_POOL_INIT;
+
+/* @summary Define the data used to describe the types of task pools to allocate as part of a task pool storage object.
+ * The task pool storage manages the data for a set of application task pools.
+ */
+typedef struct PAL_TASK_POOL_STORAGE_INIT {
+    struct PAL_TASK_POOL_INIT    *TaskPoolTypes;        /* An array of PoolTypeCount PAL_TASK_POOL_INIT structures, one per pool type. */
+    pal_uint32_t                  PoolTypeCount;        /* The number of pool types. */
+} PAL_TASK_POOL_STORAGE_INIT;
+
+/* @summary Define the data used to create a pool of threads used for executing tasks within the task system.
+ * The I/O worker threads are used for executing asynchronous I/O requests and running user I/O completion callbacks.
+ * The CPU worker threads are used for executing non-blocking CPU work tasks.
+ */
+typedef struct PAL_TASK_WORKER_POOL_INIT {
+    struct PAL_TASK_POOL_STORAGE *PoolStorage;          /* A pointer to the PAL_TASK_POOL_STORAGE object from which the worker threads retrieve their task pools. */
+    void                         *PoolContext;          /* Opaque data associated with the worker pool and available to all worker threads. */
+    PAL_TaskWorkerInit_Func       ThreadInitFunc;       /* The function used to perform any application-specific setup for each worker thread, such as allocating thread-local storage. */
+    pal_uint32_t                  IoWorkerCount;        /* The number of I/O worker threads to create. This value should be at least one. */
+    pal_uint32_t                  IoWorkerStackSize;    /* The minimum number of bytes of stack memory to allocate for each I/O worker thread, or PAL_WORKER_STACK_SIZE_DEFAULT. */
+    pal_uint32_t                  CpuWorkerCount;       /* The number of CPU worker threads to create. This value is usually set to the number of logical CPUs. */
+    pal_uint32_t                  CpuWorkerStackSize;   /* The minimum number of bytes of stack memory to allocate for each CPU worker thread, or PAL_WORKER_STACK_SIZE_DEFAULT. */
+    pal_uint32_t                  MaxAsyncIoRequests;   /* The maximum number of asynchronous I/O requests that can be executing at any one time. */
+} PAL_TASK_WORKER_POOL_INIT;
+
+/* @summary Define the supported completion types for a task.
+ */
+typedef enum PAL_TASKID_COMPLETION_TYPE {
+    PAL_TASKID_COMPLETION_TYPE_AUTOMATIC =  0,          /* The task is automatically-completed (PAL_TaskComplete is called after the task entry point returns). */
+    PAL_TASKID_COMPLETION_TYPE_INTERNAL  =  1,          /* The task is internally-completed (PAL_TaskComplete is called from the task entry point). */
+    PAL_TASKID_COMPLETION_TYPE_EXTERNAL  =  2,          /* The task is completed by an external event and explicit call to PAL_TaskComplete. External tasks are never made ready-to-run. */
+} PAL_TASKID_COMPLETION_TYPE;
+
+/* @summary Define the recognized identifiers for types of task pools.
+ */
+typedef enum PAL_TASK_POOL_TYPE_ID {
+    PAL_TASK_POOL_TYPE_ID_MAIN           =  0,          /* The task pool type is for use by the main application thread. */
+    PAL_TASK_POOL_TYPE_ID_IO_WORKER      =  1,          /* The task pool type is for use by an I/O worker thread within a PAL_TASK_WORKER_POOL. */
+    PAL_TASK_POOL_TYPE_ID_CPU_WORKER     =  2,          /* The task pool type is for use by a CPU worker thread within a PAL_TASK_WORKER_POOL. */
+    PAL_TASK_POOL_TYPE_ID_USER_WORKER    =  3,          /* The task pool type is used by a thread external to the task system (managed wholly by the application). */
+} PAL_TASK_POOL_TYPE_ID;
+
+/* @summary Define various flag values that can be bitwise OR'd to represent the operations that can be performed by a thread that owns a particular type of task pool.
+ */
+typedef enum PAL_TASK_POOL_FLAGS {
+    PAL_TASK_POOL_FLAGS_NONE             = (0UL <<  0), /* The task pool cannot do anything. */
+    PAL_TASK_POOL_FLAG_CREATE            = (1UL <<  0), /* The thread that owns the task pool can create new tasks. */
+    PAL_TASK_POOL_FLAG_EXECUTE           = (1UL <<  1), /* The thread that owns the task pool can execute tasks. */
+    PAL_TASK_POOL_FLAG_COMPLETE          = (1UL <<  2), /* The thread that owns the task pool can complete tasks. */
+    PAL_TASK_POOL_FLAG_STEAL             = (1UL <<  3), /* The thread that owns the task pool can steal work from other threads. */
+} PAL_TASK_POOL_FLAGS;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#if 0
-/* @summary Inspect one or more task pool configurations and perform validation checks against them.
- * @param type_configs An array of type_count PAL_TASK_POOL_INIT structures defining the configuration for each type of task pool.
- * @param type_results An array of type_count integers where the validation results for each PAL_TASK_POOL_INIT will be written.
- * @param type_count The number of elements in the type_configs and type_results arrays.
- * @param global_result On return, any non type-specific validation error is written to this location.
- * @return Zero if the task pool configurations are all valid, or -1 if one or more problems were detected.
- */
-PAL_API(int)
-PAL_TaskPoolConfigurationValidate
-(
-    struct PAL_TASK_POOL_INIT *type_configs,
-    pal_sint32_t              *type_results, 
-    pal_uint32_t                 type_count, 
-    pal_sint32_t             *global_result
-);
-
-/* @summary Determine the amount of memory required to initialize a task pool storage object with the given configuration.
- * @param type_configs An array of type_count PAL_TASK_POOL_INIT structures defining the configuration for each task pool type.
- * @param type_count The number of elements in the type_configs array.
- * @return The minimum number of bytes required to successfully initialize a task pool storage object with the given configuration.
- */
-PAL_API(pal_usize_t)
-PAL_TaskPoolStorageQueryMemorySize
-(
-    struct PAL_TASK_POOL_INIT *type_configs, 
-    pal_uint32_t                 type_count
-);
-
-/* @summary Initialize a task pool storage blob.
- * @param storage The PAL_TASK_POOL_STORAGE to initialize.
- * @param init Data used to configure the storage pool.
- * @return Zero if the storage object is successfully initialized, or -1 if an error occurred.
- */
-PAL_API(int)
+PAL_API(struct PAL_TASK_POOL_STORAGE*)
 PAL_TaskPoolStorageCreate
 (
-    struct PAL_TASK_POOL_STORAGE   *storage, 
     struct PAL_TASK_POOL_STORAGE_INIT *init
 );
 
-/* @summary Free all resources associated with a task pool storage object.
- * @param storage The PAL_TASK_POOL_STORAGE object to delete.
- */
 PAL_API(void)
 PAL_TaskPoolStorageDelete
 (
     struct PAL_TASK_POOL_STORAGE *storage
 );
 
-/* @summary Query a task pool storage object for the total number of task pools it manages.
- * @param storage The PAL_TASK_POOL_STORAGE object to query.
- * @return The total number of task pools managed by the storage object.
+/* @summary Create one or more tasks. This step allocates the task IDs. The tasks cannot execute until they are published.
+ * For each returned task ID, the application must call PAL_TaskGetData to retrieve the PAL_TASK within the task pool.
+ * With the PAL_TASK, the application can set the task parent, entry point routine and any store any argument data.
+ * Once the PAL_TASK is initialized, the task ID can be supplied to PAL_TaskPublish to make the task runnable.
+ * @param thread_pool The PAL_TASK_POOL bound to the thread calling PAL_TaskCreate.
+ * @param task_id_list The array that will store the generated task ID(s).
+ * @param task_count The number of tasks to create.
+ * @return Zero if all task_count items in task_list are successfully initialized, or non-zero if an error occurred.
  */
-PAL_API(pal_uint32_t)
-PAL_TaskPoolStorageQueryTotalPoolCount
+PAL_API(int)
+PAL_TaskCreate
 (
-    struct PAL_TASK_POOL_STORAGE *storage
+    struct PAL_TASK_POOL *thread_pool, 
+    PAL_TASKID          *task_id_list, 
+    pal_uint32_t           task_count
 );
 
-/* @summary Acquire a task pool and bind it to the calling thread.
- * This function is safe to call from multiple threads simultaneously.
- * This function should not be called from performance-critical code, as it may block.
- * @param storage The PAL_TASK_POOL_STORAGE object from which the pool should be acquired.
- * @param pool_type_id One of PAL_TASK_POOL_ID, or an application-defined value specifying the pool type to acquire.
- * @param prng_seed Initial seed data for the pseudo-random number generator used to select victim tasks. If this value is NULL, random seed data is used.
- * @param prng_seed_size The number of bytes of seed data supplied. This must be either 0, or at least PAL_PRNG_SEED_SIZE.
- * @return A pointer to the task pool object, or NULL if no pool of the specified type could be acquired.
- */
-PAL_API(struct PAL_TASK_POOL*)
-PAL_TaskPoolStorageAcquireTaskPool
-(
-    struct PAL_TASK_POOL_STORAGE *storage, 
-    pal_uint32_t             pool_type_id, 
-    void                       *prng_seed, 
-    pal_usize_t            prng_seed_size
-);
-
-/* @summary Release a task pool back to the storage object it was allocated from.
- * This function is safe to call from multiple threads simultaneously.
- * This function should not be called from performance-critical code, as it may block.
- * @param pool The task pool object to release.
+/* @summary Delete a single task after it has finished executing. 
+ * Application code does not have to delete tasks explicitly; they are deleted automatically upon completion.
+ * After deletion, the task ID is invalidated and will not be recognized as a valid task.
+ * Batch deletion is not supported since a thread can only execute a single task at a time.
+ * @param thread_pool The PAL_TASK_POOL bound to the thread calling PAL_TaskDelete.
+ * @param task_id The identifier of the task to delete.
  */
 PAL_API(void)
-PAL_TaskPoolStorageReleaseTaskPool
+PAL_TaskDelete
 (
-    struct PAL_TASK_POOL *pool
+    struct PAL_TASK_POOL *thread_pool, 
+    PAL_TASKID                task_id
 );
 
-/* @summary Query a task pool for the maximum number of simultaneously-active tasks.
- * @param pool The PAL_TASK_POOL to query.
- * @return The maximum number of uncompleted tasks that can be defined against the pool.
+/* @summary Retrieve the PAL_TASK data associated with a task identifier.
+ * This allows the application to set the task entry point, parent and any argument data.
+ * The calling thread must be the same thread that allocated the task ID using PAL_TaskCreate.
+ * @param thread_pool The PAL_TASK_POOL bound to the calling thread. This must be the same thread that created the task ID.
+ * @param task_id The identifier of the task to retrieve.
+ * @return A pointer to the PAL_TASK representing the user data associated with the task, or NULL.
  */
-PAL_API(pal_uint32_t)
-PAL_TaskPoolQueryMaxActiveTasks
+PAL_API(struct PAL_TASK*)
+PAL_TaskGetData
 (
-    struct PAL_TASK_POOL *pool
+    struct PAL_TASK_POOL *thread_pool, 
+    PAL_TASKID                task_id
 );
 
-/* @summary Retrieve the operating system identifier of the thread that owns a task pool.
- * @param pool The PAL_TASK_POOL to query.
- * @return The operating system identifier of the thread that owns the task pool.
- */
-PAL_API(pal_uint32_t)
-PAL_TaskPoolQueryBoundThreadId
-(
-    struct PAL_TASK_POOL *pool
-);
-
-/* @summary Retrieve a value indicating the pool type for a given PAL_TASK_POOL.
- * @param pool The PAL_TASK_POOL to query.
- * @return One of the values of the PAL_TASK_POOL_ID enumeration, or a user-defined value, indicating the pool type.
- */
-PAL_API(pal_uint32_t)
-PAL_TaskPoolQueryPoolType
-(
-    struct PAL_TASK_POOL *pool
-);
-
-/* @summary Retrieve a zero-based index of a task pool within the pool storage. 
- * This value remains constant for the lifetime of the PAL_TASK_POOL_STORAGE.
- * This value can be used to uniquely identify the pool bound to a thread.
- * @param pool The PAL_TASK_POOL to query.
- * @return The zero-based index of that task pool within its associated PAL_TASK_POOL_STORAGE.
- */
-PAL_API(pal_uint32_t)
-PAL_TaskPoolQueryPoolIndex
-(
-    struct PAL_TASK_POOL *pool
-);
-
-/* @summary Retrieve the total number of task pools in the PAL_TASK_POOL_STORAGE from which a pool was allocated.
- * This value remains constant for the lifetime of the PAL_TASK_POOL_STORAGE.
- * @param pool The PAL_TASK_POOL to query.
- * @return The total number of task pools defined for the PAL_TASK_POOL_STORAGE.
- */
-PAL_API(pal_uint32_t)
-PAL_TaskPoolQueryPoolCount
-(
-    struct PAL_TASK_POOL *pool
-);
-
-/* @summary Wait until a task pool indicates that it has tasks available to steal.
- * If external threads have indicated they have tasks available to steal, the calling thread does not block.
- * If no tasks are available to steal, the calling thread blocks until a thread indicates work availability.
- * By the time the function returns, the steal notification may or may not still be valid.
- * @param pool The PAL_TASK_POOL allocated to the calling thread.
- * @return A pointer to the task pool owned by the thread that may have tasks available to steal.
- * The returned value may be the same as the pool owned by the calling thread, in which case the function should be called again.
- */
-PAL_API(struct PAL_TASK_POOL*)
-PAL_TaskPoolWaitToStealTasks
-(
-    struct PAL_TASK_POOL *pool
-);
-
-/* @summary Publish a notification that a task pool has one or more tasks available to steal.
- * @param pool The PAL_TASK_POOL allocated to the calling thread, which currently has at least one task available to steal.
- */
-PAL_API(void)
-PAL_TaskPoolNotifyTasksToSteal
-(
-    struct PAL_TASK_POOL *pool
-);
-
-/* @summary Initialize a PAL_TASK_INIT structure for an internally-completed root task.
- * @param init The PAL_TASK_INIT to initialize.
- * @param task_main The task entry point.
- * @param task_args Optional argument data to associate with the task, or NULL. 
- * @param args_size The size of the argument data, in bytes. The maximum size is PAL_MAX_TASK_DATA_BYTES.
- * @param task_deps An optional list of task IDs for tasks that must complete before this new task can run.
- * @param deps_count The number of task IDs specified in the dependency list.
- * @return Zero if the task data is valid, or -1 if an error occurred.
+/* @summary Publish one or more tasks. If all dependencies are satisfied, the tasks are made ready-to-run.
+ * It is possible that a ready-to-run task may start or even finish executing before this call returns.
+ * @param thread_pool The PAL_TASK_POOL bound to the calling thread. This must be the same thread that created the task ID(s).
+ * @param task_id_list The array of task IDs to publish. Each task must have had its data set.
+ * @param task_count The number of IDs specified in task_id_list.
+ * @param dependency_list An array of task IDs for tasks that must complete before any of the tasks in task_id_list can run.
+ * If the task(s) in task_id_list should be made ready-to-run immediately, specify NULL for dependency_list and 0 for dependency_count.
+ * The dependency list applies to all tasks specified in task_id_list.
+ * @param dependency_count The number of task IDs specified in dependency_list.
+ * @return Zero if all tasks in task_id_list were successfully published, or non-zero if an error occurred.
  */
 PAL_API(int)
-PAL_TaskInitInternallyCompleted
+PAL_TaskPublish
 (
-    struct PAL_TASK_INIT   *init, 
-    PAL_TaskMain_Func  task_main, 
-    void              *task_args, 
-    pal_usize_t        args_size, 
-    PAL_TASK_ID       *task_deps, 
-    pal_usize_t       deps_count
+    struct PAL_TASK_POOL *thread_pool, 
+    PAL_TASKID          *task_id_list, 
+    pal_uint32_t           task_count, 
+    PAL_TASKID       *dependency_list, 
+    pal_uint32_t     dependency_count
 );
-
-/* @summary Initialize a PAL_TASK_INIT structure for an internally-completed child task.
- * @param init The PAL_TASK_INIT to initialize.
- * @param parent_id The identifier of the parent task.
- * @param task_main The task entry point.
- * @param task_args Optional argument data to associate with the task, or NULL. 
- * @param args_size The size of the argument data, in bytes. The maximum size is PAL_MAX_TASK_DATA_BYTES.
- * @param task_deps An optional list of task IDs for tasks that must complete before this new task can run.
- * @param deps_count The number of task IDs specified in the dependency list.
- * @return Zero if the task data is valid, or -1 if an error occurred.
- */
-PAL_API(int)
-PAL_TaskInitInternallyCompletedChild
-(
-    struct PAL_TASK_INIT  *init, 
-    PAL_TASK_ID       parent_id,
-    PAL_TaskMain_Func task_main, 
-    void             *task_args, 
-    pal_usize_t       args_size, 
-    PAL_TASK_ID      *task_deps, 
-    pal_usize_t      deps_count
-);
-
-/* @summary Initialize a PAL_TASK_INIT structure for an externally-completed root task.
- * @param init The PAL_TASK_INIT to initialize.
- * @param task_main The task entry point.
- * @param task_args Optional argument data to associate with the task, or NULL. 
- * @param args_size The size of the argument data, in bytes. The maximum size is PAL_MAX_TASK_DATA_BYTES.
- * @return Zero if the task data is valid, or -1 if an error occurred.
- */
-PAL_API(int)
-PAL_TaskInitExternallyCompleted
-(
-    struct PAL_TASK_INIT   *init, 
-    PAL_TaskMain_Func  task_main, 
-    void              *task_args, 
-    pal_usize_t        args_size
-);
-
-/* @summary Initialize a PAL_TASK_INIT structure for an externally-completed child task.
- * @param init The PAL_TASK_INIT to initialize.
- * @param parent_id The identifier of the parent task.
- * @param task_main The task entry point.
- * @param task_args Optional argument data to associate with the task, or NULL. 
- * @param args_size The size of the argument data, in bytes. The maximum size is PAL_MAX_TASK_DATA_BYTES.
- * @return Zero if the task data is valid, or -1 if an error occurred.
- */
-PAL_API(int)
-PAL_TaskInitExternallyCompletedChild
-(
-    struct PAL_TASK_INIT  *init, 
-    PAL_TASK_ID       parent_id,
-    PAL_TaskMain_Func task_main, 
-    void             *task_args, 
-    pal_usize_t       args_size
-);
-
-/* @summary Define a new task. 
- * The task may start executing immediately, but cannot complete until PAL_TaskLaunch is called with the returned task ID.
- * The calling thread will block if the specified task pool does not have any available task slots.
- * @param pool The PAL_TASK_POOL owned by the calling thread. The task data is allocated from this pool.
- * @param init Information about the task to create.
- * @return The identifier of the new task, or PAL_INVALID_TASK_ID if the task could not be defined.
- */
-PAL_API(PAL_TASK_ID)
-PAL_TaskDefine
-(
-    struct PAL_TASK_POOL *pool, 
-    struct PAL_TASK_INIT *init
-);
-
-/* @summary Launch a task, indicating that it has been fully-defined, and allow the task to complete.
- * @param pool The PAL_TASK_POOL owned by the calling thread. This should be the same task pool passed to PAL_TaskDefine.
- * @param task_id The identifier of the task to launch, returned by a prior call to PAL_TaskDefine.
- * @return The number of tasks made ready-to-run, or -1 if an error occurred. This value may be zero if the task dependencies have not been satisfied.
- */
-PAL_API(int)
-PAL_TaskLaunch
-(
-    struct PAL_TASK_POOL *pool, 
-    PAL_TASK_ID        task_id
-);
-
-/* @summary Indicate completion of a task.
- * @param pool The PAL_TASK_POOL owned by the thread that completed the task. This may be different than the task pool for the thread that defined the task.
- * @param task_id The identifier of the completed task.
- * @return The number of tasks made ready-to-run by the completion of this task, or -1 if an error occurred.
- */
-PAL_API(int)
-PAL_TaskComplete
-(
-    struct PAL_TASK_POOL *pool, 
-    PAL_TASK_ID        task_id
-);
-
-/* @summary Wait for a given task to complete. While waiting, the calling thread executes available tasks.
- * @param worker_pool The PAL_TASK_WORKER_POOL used to execute tasks.
- * @param thread_pool The PAL_TASK_POOL owned by the calling thread.
- * @param wait_id The identifier of the task to wait for.
- * @param context Opaque data to pass through to each task as it executes.
- */
-PAL_API(void)
-PAL_TaskWait
-(
-    struct PAL_TASK_WORKER_POOL *worker_pool, 
-    struct PAL_TASK_POOL        *thread_pool, 
-    PAL_TASK_ID                      wait_id, 
-    void                            *context
-);
-
-/* @summary Immediately execute a task on the calling thread, and then execute available tasks until it completes.
- * This is useful for I/O tasks, for example, during the main loop of a parser.
- * @param worker_pool The PAL_TASK_WORKER_POOL used to execute tasks.
- * @param thread_pool The PAL_TASK_POOL owned by the calling thread.
- * @param task_id The identifier of the task to execute and then wait for. This must be an externally-completed task.
- * @param context Opaque data to pass through to each task as it executes.
- */
-PAL_API(void)
-PAL_TaskExecuteExternalAndWait
-(
-    struct PAL_TASK_WORKER_POOL *worker_pool, 
-    struct PAL_TASK_POOL        *thread_pool, 
-    PAL_TASK_ID                      task_id, 
-    void                            *context
-);
-
-/* @summary Determine the amount of memory required to initialize a task worker thread pool with the given configuration.
- * @param worker_count_compute The number of compute worker threads in the pool.
- * @param worker_count_io The number of I/O worker threads in the pool.
- * @param max_async_io_requests The maximum number of concurrent active asynchronous I/O requests.
- * @return The minimum number of bytes required to successfully initialize a task worker thread pool with the given configuration.
- */
-PAL_API(pal_usize_t)
-PAL_TaskWorkerPoolQueryMemorySize
-(
-    pal_uint32_t worker_count_compute, 
-    pal_uint32_t worker_count_io, 
-    pal_uint32_t max_async_io_requests
-);
-
-/* @summary Retrieve the application-defined data associated with a task worker thread pool.
- * @param pool The task worker thread pool to query.
- * @return The application-defined data associated with the task worker thread pool.
- */
-PAL_API(pal_uintptr_t)
-PAL_TaskWorkerPoolQueryUserContext
-(
-    struct PAL_TASK_WORKER_POOL *pool
-);
-
-/* @summary Initialize and launch a pool of worker threads to execute tasks.
- * @param pool On return, this location is updated with a pointer to the thread pool object.
- * @param init Data used to configure the pool of worker threads.
- * @return Zero if the thread pool is successfully initialized, or -1 if an error occurred.
- */
-PAL_API(int)
-PAL_TaskWorkerPoolLaunch
-(
-    struct PAL_TASK_WORKER_POOL      *pool, 
-    struct PAL_TASK_WORKER_POOL_INIT *init
-);
-
-/* @summary Stop all threads and free all resources associated with a pool of task worker threads.
- * @param pool The PAL_TASK_WORKER_POOL to terminate and delete.
- */
-PAL_API(void)
-PAL_TaskWorkerPoolTerminate
-(
-    struct PAL_TASK_WORKER_POOL *pool
-);
-#endif /* DISABLED */
 
 #ifdef __cplusplus
 }; /* extern "C" */
