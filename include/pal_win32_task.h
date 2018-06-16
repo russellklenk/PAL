@@ -112,7 +112,7 @@ typedef struct PAL_TASK_SCHEDULER {
     pal_uint32_t                    *PoolThreadId;             /* An array specifying the operating system thread ID bound to each task pool. */
     pal_uint32_t                     TaskPoolCount;            /* The total number of PAL_TASK_POOL instances, across all types, managed by the scheduler. */
     pal_uint32_t                     PoolTypeCount;            /* The number of distinct task pool types. */
-    struct PAL_TASK_POOL_FREE_LIST **PoolFreeList;             /* An array containing the free list for each task pool type. */
+    struct PAL_TASK_POOL_FREE_LIST  *PoolFreeList;             /* An array containing the free list for each task pool type. */
     pal_uint32_t                    *PoolTypeIds;              /* An array specifying the PAL_TASK_POOL_TYPE_ID for each free list. */
 #if 0
     unsigned int                  *OsThreadIds;                /* */
