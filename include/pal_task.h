@@ -42,6 +42,8 @@
 #   define PAL_TASKID_INDEX_MASK_PACKED      (PAL_TASKID_INDEX_MASK << PAL_TASKID_INDEX_SHIFT)
 #   define PAL_TASKID_TPOOL_MASK_PACKED      (PAL_TASKID_TPOOL_MASK << PAL_TASKID_TPOOL_SHIFT)
 #   define PAL_TASKID_VALID_MASK_PACKED      (PAL_TASKID_VALID_MASK << PAL_TASKID_VALID_SHIFT)
+#   define PAL_TASKID_MAX_SLOTS_PER_POOL     (1UL << PAL_TASKID_INDEX_BITS)
+#   define PAL_TASKID_MAX_TASK_POOLS         (1UL << PAL_TASKID_TPOOL_BITS)
 #endif
 
 /* @summary Check a PAL_TASKID to determine whether the task ID is valid.
@@ -200,7 +202,7 @@ typedef enum PAL_TASK_COMPLETION_TYPE {
  */
 typedef enum PAL_TASK_POOL_TYPE_ID {
     PAL_TASK_POOL_TYPE_ID_MAIN           =  0,          /* The task pool type is for use by the main application thread. */
-    PAL_TASK_POOL_TYPE_ID_IO_WORKER      =  1,          /* The task pool type is for use by an I/O worker thread within a PAL_TASK_WORKER_POOL. */
+    PAL_TASK_POOL_TYPE_ID_AIO_WORKER     =  1,          /* The task pool type is for use by an I/O worker thread within a PAL_TASK_WORKER_POOL. */
     PAL_TASK_POOL_TYPE_ID_CPU_WORKER     =  2,          /* The task pool type is for use by a CPU worker thread within a PAL_TASK_WORKER_POOL. */
     PAL_TASK_POOL_TYPE_ID_USER_WORKER    =  3,          /* The task pool type is used by a thread external to the task system (managed wholly by the application). */
 } PAL_TASK_POOL_TYPE_ID;
