@@ -140,8 +140,8 @@
 /* @summary Define the default stack size for a task pool compute worker thread.
  * The stack size is specified in bytes. The default is 64KB.
  */
-#ifndef PAL_WORKER_STACK_SIZE_DEFAULT
-    #define PAL_WORKER_STACK_SIZE_DEFAULT     (64 * 1024)
+#ifndef PAL_THREAD_STACK_SIZE_DEFAULT
+    #define PAL_THREAD_STACK_SIZE_DEFAULT     (64 * 1024)
 #endif
 
 /* @summary The PAL_TARGET_COMPILER preprocessor value can be used to specify or 
