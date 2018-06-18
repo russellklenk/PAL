@@ -53,8 +53,9 @@ typedef struct PAL_CACHELINE_ALIGN PAL_TASK_POOL {
     pal_uint32_t                   PoolIndex;                /* The zero-based index of the task pool in the scheduler's task pool array. */
     /* ---- */
     pal_uint32_t                   PoolFlags;                /* One or more bitwise ORd values from the PAL_TASK_POOL_FLAGS enumeration specifying the set of operations that can be performed by the thread that owns the pool. */
-    pal_uint32_t                   Reserved4;                /* Reserved for future use. Set to zero. */
-    struct PAL_TASK_POOL          *ExecutePoolSet;           /* An array of PAL_TASK_POOL instances to which task steal notifications can be published. Maintained by the PAL_TASK_SCHEDULER. */
+    pal_uint32_t                   UserDataSize;             /* The size of the user data section, in bytes. */
+    pal_uint8_t                   *UserDataBuffer;           /* Pointer to a per-pool buffer that can be used to store pool-local data. */
+    struct PAL_TASK_POOL          *StealPoolSet;             /* An array of PAL_TASK_POOL instances to which task steal notifications can be published. Maintained by the PAL_TASK_SCHEDULER. */
     pal_uint64_t                   StealWordMask;            /* The bitmask used to signal when this task pool has a task available to steal. Constant. */
     pal_uint32_t                   StealWordIndex;           /* The zero-based index of the word to modify in the target pool's StealBitSet when this task pool has a task available to steal. Constant. */
     pal_uint32_t                   StealPoolCount;           /* The number of valid items in the StealPoolSet array. */
@@ -62,7 +63,6 @@ typedef struct PAL_CACHELINE_ALIGN PAL_TASK_POOL {
     pal_uint32_t                   StealConsumeIndex;        /* The zero-based index of the next 64-bit word in StealBitSet to read and check for steal notification when this pool is out of ready-to-run work. */
     pal_uint64_t                   AllocCount;               /* The counter used to track the consumer position in the AllocSlotIds list. */
     pal_uint64_t                   AllocNext;                /* An internal counter used to allocate task slots from the available range. Always <= AllocCount. */
-    pal_uint64_t                   Reserved8;                /* Reserved for future use. Set to zero. */
     /* ---- */
     pal_uint8_t                    FreePad[56];              /* Padding used to separate the task slot free counter from other data to prevent false sharing. */
     pal_uint64_t                   FreeCount;                /* The counter used to track the producer position in the AllocSlotIds list. */
@@ -108,12 +108,15 @@ typedef struct PAL_TASK_POOL_FREE_LIST {
  * 5. A global work queue to which any thread can publish work items to be executed on worker threads.
  */
 typedef struct PAL_TASK_SCHEDULER {
+    struct PAL_TASK_POOL           **StealPoolSet;             /* An array of TaskPoolCount pointers, of which StealPoolCount are valid, to each task pool that has the PAL_TASK_POOL_FLAG_STEAL attribute. */
     struct PAL_TASK_POOL           **TaskPoolList;             /* An array of TaskPoolCount pointers to each task pool. Addressible by PAL_TASK_POOL::PoolIndex. */
     pal_uint32_t                    *PoolThreadId;             /* An array specifying the operating system thread ID bound to each task pool. */
     pal_uint32_t                     TaskPoolCount;            /* The total number of PAL_TASK_POOL instances, across all types, managed by the scheduler. */
+    pal_uint32_t                     StealPoolCount;           /* The number of valid entries in the StealPoolSet array. */
     pal_uint32_t                     PoolTypeCount;            /* The number of distinct task pool types. */
     struct PAL_TASK_POOL_FREE_LIST  *PoolFreeList;             /* An array containing the free list for each task pool type. */
     pal_uint32_t                    *PoolTypeIds;              /* An array specifying the PAL_TASK_POOL_TYPE_ID for each free list. */
+    pal_uint8_t                     *TaskPoolBase;             /* The base address of the first PAL_TASK_POOL. */
 #if 0
     unsigned int                  *OsThreadIds;                /* */
     HANDLE                        *OsThreadHandles;            /* */
