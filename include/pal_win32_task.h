@@ -46,21 +46,20 @@ typedef struct PAL_CACHELINE_ALIGN PAL_TASK_POOL {
     struct PAL_TASK_DATA          *TaskSlotData;             /* A pointer to the start of the memory block used to store task data. Some portion of this data may only be reserved and not committed. */
     PAL_TASKID                    *ReadyTaskIds;             /* The storage for a single-producer, multi-consumer concurrent queue storing the IDs of ready-to-run tasks. Pre-committed to maximum capacity. */
     pal_uint16_t                  *AllocSlotIds;             /* The storage for a multi-producer, single-consumer concurrent queue storing the slot indices of available slots in TaskSlotData. */
-    pal_uint64_t                  *StealBitSet;              /* Pointer to an array of 16 64-bit words (1024 bits) used to indicate when another task pool might have tasks available to steal. */
-    pal_uint32_t                   CommitCount;              /* The number of currently committed chunks of PAL_TASK_DATA. Each chunk is 1024 tasks. */
-    pal_sint32_t                   PoolTypeId;               /* One of the values of the PAL_TASK_POOL_TYPE_ID enumeration. Used mainly for debugging purposes. */
+    HANDLE                         ParkSemaphore;            /* The scheduler semaphore used to park the worker thread. Used only by CPU worker threads. */
     pal_uint32_t                   OsThreadId;               /* The operating system thread identifier of the thread bound to the task pool. */
+    pal_sint32_t                   PoolTypeId;               /* One of the values of the PAL_TASK_POOL_TYPE_ID enumeration. Used mainly for debugging purposes. */
     pal_uint32_t                   PoolIndex;                /* The zero-based index of the task pool in the scheduler's task pool array. */
-    /* ---- */
     pal_uint32_t                   PoolFlags;                /* One or more bitwise ORd values from the PAL_TASK_POOL_FLAGS enumeration specifying the set of operations that can be performed by the thread that owns the pool. */
-    pal_uint32_t                   UserDataSize;             /* The size of the user data section, in bytes. */
+    /* ---- */
     pal_uint8_t                   *UserDataBuffer;           /* Pointer to a per-pool buffer that can be used to store pool-local data. */
-    struct PAL_TASK_POOL          *StealPoolSet;             /* An array of PAL_TASK_POOL instances to which task steal notifications can be published. Maintained by the PAL_TASK_SCHEDULER. */
-    pal_uint64_t                   StealWordMask;            /* The bitmask used to signal when this task pool has a task available to steal. Constant. */
-    pal_uint32_t                   StealWordIndex;           /* The zero-based index of the word to modify in the target pool's StealBitSet when this task pool has a task available to steal. Constant. */
-    pal_uint32_t                   StealPoolCount;           /* The number of valid items in the StealPoolSet array. */
-    pal_uint32_t                   StealPublishIndex;        /* The zero-based index of the next pool to which a steal notification will be published when this task pool has a task available to steal. */
-    pal_uint32_t                   StealConsumeIndex;        /* The zero-based index of the next 64-bit word in StealBitSet to read and check for steal notification when this pool is out of ready-to-run work. */
+    pal_uint32_t                   UserDataSize;             /* The size of the user data section, in bytes. */
+    PAL_TASKID                     WakeupTaskId;             /* The PAL_TASKID of the task assigned to the worker when it is woken. Only used by worker threads. */
+    struct PAL_TASK_POOL         **TaskPoolList;             /* The scheduler's list of task pools. Used when attempting to steal work. */
+    pal_uintptr_t                  Reserved1;                /* Reserved for future use. Set to zero. */
+    pal_uintptr_t                  Reserved2;                /* Reserved for future use. Set to zero. */
+    pal_uint32_t                   Reserved3;                /* Reserved for future use. Set to zero. */
+    pal_uint32_t                   CommitCount;              /* The number of currently committed chunks of PAL_TASK_DATA. Each chunk is 1024 tasks. */
     pal_uint64_t                   AllocCount;               /* The counter used to track the consumer position in the AllocSlotIds list. */
     pal_uint64_t                   AllocNext;                /* An internal counter used to allocate task slots from the available range. Always <= AllocCount. */
     /* ---- */
@@ -78,8 +77,7 @@ typedef struct PAL_CACHELINE_ALIGN PAL_TASK_POOL {
 /* MEMORY LAYOUT for PAL_TASK_POOL:
  * base: 
  *     | [PAL_TASK_POOL 320 bytes]
- *     | [StealBitSet 128 bytes]
- *     | [UserDataStorage 4KB-448 bytes] [64 byte alignment]
+ *     | [UserDataStorage 4KB-320 bytes] [64 byte alignment]
  *     | [AllocSlotIds 128KB] [64 byte alignment]
  *     | [ReadyTaskIds 256KB] [64 byte alignment]
  *     | <--- TaskSlotData points here (base+388KB)
@@ -108,33 +106,34 @@ typedef struct PAL_TASK_POOL_FREE_LIST {
  * 5. A global work queue to which any thread can publish work items to be executed on worker threads.
  */
 typedef struct PAL_TASK_SCHEDULER {
-    struct PAL_TASK_POOL           **StealPoolSet;             /* An array of TaskPoolCount pointers, of which StealPoolCount are valid, to each task pool that has the PAL_TASK_POOL_FLAG_STEAL attribute. */
     struct PAL_TASK_POOL           **TaskPoolList;             /* An array of TaskPoolCount pointers to each task pool. Addressible by PAL_TASK_POOL::PoolIndex. */
+    pal_sint32_t                    *TaskPoolERTR;             /* An array of TaskPoolCount values, each containing the approximate number of items in the associated pool's ready-to-run queue. */
     pal_uint32_t                    *PoolThreadId;             /* An array specifying the operating system thread ID bound to each task pool. */
     pal_uint32_t                     TaskPoolCount;            /* The total number of PAL_TASK_POOL instances, across all types, managed by the scheduler. */
-    pal_uint32_t                     StealPoolCount;           /* The number of valid entries in the StealPoolSet array. */
     pal_uint32_t                     PoolTypeCount;            /* The number of distinct task pool types. */
+    pal_uint32_t                    *ParkedPoolIds;            /* An array of CpuWorkerCount pool indices representing a LIFO (stack) of parked worker threads. */
     struct PAL_TASK_POOL_FREE_LIST  *PoolFreeList;             /* An array containing the free list for each task pool type. */
     pal_uint32_t                    *PoolTypeIds;              /* An array specifying the PAL_TASK_POOL_TYPE_ID for each free list. */
     pal_uint8_t                     *TaskPoolBase;             /* The base address of the first PAL_TASK_POOL. */
-#if 0
-    unsigned int                  *OsThreadIds;                /* */
-    HANDLE                        *OsThreadHandles;            /* */
-    HANDLE                        *WorkerReadyEvents;          /* */
-    HANDLE                        *WorkerErrorEvents;          /* */
-    HANDLE                         IoCompletionPort;           /* */
-    HANDLE                         TerminateSignal;            /* */
-    pal_uint32_t                   CpuWorkerCount;             /* */
-    pal_uint32_t                   AioWorkerCount;             /* */
-    pal_uint32_t                   ActiveThreadCount;          /* */
-    pal_uint32_t                   MaxAsyncIoRequests;         /* */
     /* ---- */
-    struct PAL_AIO_REQUEST        *IoRequestStorage;           /* */
-    struct PAL_AIO_REQUEST        *IoRequestFreeList;          /* */
-    CRITICAL_SECTION               IoRequestFreeListLock;      /* */
-    HANDLE                         IoRequestSemaphore;         /* TODO: should be lightweight semaphore */
-#endif
-    /* TODO: global queue, scheduling data */
+    unsigned int                    *OsWorkerThreadIds;        /* An array of CpuWorkerCount+AioWorkerCount operating system identifiers for the worker threads. */
+    HANDLE                          *OsWorkerThreadHandles;    /* An array of CpuWorkerCount+AioWorkerCount handles for the worker threads. */
+    HANDLE                          *WorkerParkSemaphores;     /* An array of CpuWorkerCount binary semaphores used to park and wake worker threads. */
+    HANDLE                           IoCompletionPort;         /* The I/O completion port used by the I/O worker threads. */
+    pal_uintptr_t                    Reserved1;                /* Reserved for future use. Set to zero. */
+    pal_uintptr_t                    Reserved2;                /* Reserved for future use. Set to zero. */
+    pal_uint32_t volatile            ShutdownSignal;           /* A flag set to non-zero when the scheduler is being terminated. */
+    pal_uint32_t                     CpuWorkerCount;           /* The number of worker threads used to execute non-blocking CPU work. */
+    pal_uint32_t                     AioWorkerCount;           /* The number of worker threads used to execute blocking and non-blocking I/O work. */
+    pal_uint32_t                     ActiveThreadCount;        /* The number of active worker threads. */
+    /* ---- */
+    pal_uint8_t                      ReadyEventPad[56];        /* Padding used to separate the ReadyEventCount from other data. */
+    pal_uint64_t                     ReadyEventCount;          /* A monotonically-increasing integer value tracking the number of tasks made ready-to-run. */
+    /* ---- */
+    pal_uint8_t                      ParkedPoolPad[60];        /* Padding used to separate the ParkedPoolToS from other data. */
+    pal_sint32_t                     ParkedPoolToS;            /* The value representing the next-write location for the ParkedPoolIds array (top of stack). */
+    /* ---- */
+    /* TODO: I/O worker related data */
 } PAL_TASK_SCHEDULER;
 
 /* MEMORY LAYOUT for PAL_TASK_SCHEDULER:
