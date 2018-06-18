@@ -212,9 +212,10 @@ typedef enum PAL_TASK_POOL_TYPE_ID {
 typedef enum PAL_TASK_POOL_FLAGS {
     PAL_TASK_POOL_FLAGS_NONE             = (0UL <<  0), /* The task pool cannot do anything. */
     PAL_TASK_POOL_FLAG_CREATE            = (1UL <<  0), /* The thread that owns the task pool can create new tasks. */
-    PAL_TASK_POOL_FLAG_EXECUTE           = (1UL <<  1), /* The thread that owns the task pool can execute tasks. */
-    PAL_TASK_POOL_FLAG_COMPLETE          = (1UL <<  2), /* The thread that owns the task pool can complete tasks. */
-    PAL_TASK_POOL_FLAG_STEAL             = (1UL <<  3), /* The thread that owns the task pool can steal work from other threads. */
+    PAL_TASK_POOL_FLAG_PUBLISH           = (1UL <<  1), /* The thread that owns the task pool can publish tasks. */
+    PAL_TASK_POOL_FLAG_EXECUTE           = (1UL <<  2), /* The thread that owns the task pool can execute tasks. */
+    PAL_TASK_POOL_FLAG_COMPLETE          = (1UL <<  3), /* The thread that owns the task pool can complete tasks. */
+    PAL_TASK_POOL_FLAG_STEAL             = (1UL <<  4), /* The thread that owns the task pool can steal work from other threads. */
 } PAL_TASK_POOL_FLAGS;
 
 /* @summary Define various flag values that can be bitwise OR'd to perform thread binding operations for a PAL_TASK_POOL.
