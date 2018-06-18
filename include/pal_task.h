@@ -278,7 +278,7 @@ PAL_TaskSchedulerReleaseTaskPool
 );
 
 /* @summary Explicitly bind a task pool to an operating system thread.
- * This function is internally synchronized. The calling thread may block.
+ * This function must be externally synchronized.
  * This function should only be called if the task pool was acquired with PAL_TASK_POOL_BIND_FLAG_MANUAL.
  * @param scheduler The PAL_TASK_SCHEDULER from which the pool was acquired.
  * @param pool The PAL_TASK_POOL being associated with an operating system thread.
