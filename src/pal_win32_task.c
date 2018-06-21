@@ -196,13 +196,39 @@ PAL_CpuWorkerThreadMain
 )
 {
     PAL_CPU_WORKER_THREAD_INIT *init =(PAL_CPU_WORKER_THREAD_INIT*) argp;
+    PAL_TASK_SCHEDULER    *scheduler = init->TaskScheduler;
+    PAL_TASK_POOL       *thread_pool = NULL;
+    void                 *thread_ctx = NULL;
+    pal_sint32_t        pool_type_id = PAL_TASK_POOL_TYPE_ID_CPU_WORKER;
+    pal_uint32_t     pool_bind_flags = PAL_TASK_POOL_BIND_FLAGS_NONE;
     unsigned int           exit_code = 0;
+
+    /* acquire a pool of type CPU_WORKER - if this fails, execution cannot proceed */
+    if ((thread_pool = PAL_TaskSchedulerAcquireTaskPool(scheduler, pool_type_id, pool_bind_flags)) == NULL) {
+        SetEvent(init->ErrorSignal);
+        return 1;
+    }
+    /* set the park semaphore for the task pool bound to the thread */
+    thread_pool->ParkSemaphore = init->ParkSemaphore;
+
+    /* run the application-supplied initialization function */
+    if (init->ThreadInit(scheduler, thread_pool, init->CreateContext, &thread_ctx) != 0) {
+        PAL_TaskSchedulerReleaseTaskPool(scheduler, thread_pool);
+        SetEvent(init->ErrorSignal);
+        return 2;
+    }
+
+    /* thread initialization has completed */
+    SetEvent(init->ReadySignal); init = NULL;
 
     __try {
         /* main loop */
-        PAL_UNUSED_LOCAL(init);
+        while (scheduler->ShutdownSignal == 0) {
+            /* do work */
+        }
     } 
     __finally {
+        PAL_TaskSchedulerReleaseTaskPool(scheduler, thread_pool);
         return exit_code;
     }
 }
@@ -219,12 +245,38 @@ PAL_AioWorkerThreadMain
 )
 {
     PAL_AIO_WORKER_THREAD_INIT *init =(PAL_AIO_WORKER_THREAD_INIT*) argp;
+    PAL_TASK_SCHEDULER    *scheduler = init->TaskScheduler;
+    PAL_TASK_POOL       *thread_pool = NULL;
+    void                 *thread_ctx = NULL;
+    HANDLE                      iocp = init->CompletionPort;
+    pal_sint32_t        pool_type_id = PAL_TASK_POOL_TYPE_ID_AIO_WORKER;
+    pal_uint32_t     pool_bind_flags = PAL_TASK_POOL_BIND_FLAGS_NONE;
     unsigned int           exit_code = 0;
 
-    __try {
-        PAL_UNUSED_LOCAL(init);
+    /* acquire a pool of type AIO_WORKER - if this fails, execution cannot proceed */
+    if ((thread_pool = PAL_TaskSchedulerAcquireTaskPool(scheduler, pool_type_id, pool_bind_flags)) == NULL) {
+        SetEvent(init->ErrorSignal);
+        return 1;
     }
+
+    /* run the application-supplied initialization function */
+    if (init->ThreadInit(scheduler, thread_pool, init->CreateContext, &thread_ctx) != 0) {
+        PAL_TaskSchedulerReleaseTaskPool(scheduler, thread_pool);
+        SetEvent(init->ErrorSignal);
+        return 2;
+    }
+
+    /* thread initialization has completed */
+    SetEvent(init->ReadySignal); init = NULL;
+
+    __try {
+        /* main loop */
+        while (scheduler->ShutdownSignal == 0) {
+            /* do work */
+        }
+    } 
     __finally {
+        PAL_TaskSchedulerReleaseTaskPool(scheduler, thread_pool);
         return exit_code;
     }
 }
