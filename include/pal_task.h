@@ -109,11 +109,11 @@ struct  PAL_TASK_SCHEDULER_INIT;
  */
 typedef pal_uint32_t  PAL_TASKID;
 
-/* @summary Define the signature for the callback function invoked to perform initialization for an task system worker thread.
+/* @summary Define the signature for the callback function invoked to perform initialization for a task system worker thread.
  * The callback should allocate any per-thread data it needs and return a pointer to that data in the thread_context parameter.
  * @param task_scheduler The task scheduler that owns the worker thread.
  * @param thread_task_pool The PAL_TASK_POOL allocated to the worker thread.
- * @param worker_pool_context Opaque data supplied when the worker thread pool was created.
+ * @param init_context Opaque data supplied when the worker thread pool was created.
  * @param thread_context On return, the function should update this value to point to any data to be associated with the thread.
  * @return Zero if initialization completes successfully, or -1 if initialization failed.
  */
@@ -121,8 +121,8 @@ typedef int  (*PAL_TaskWorkerInit_Func)
 (
     struct PAL_TASK_SCHEDULER *task_scheduler, 
     struct PAL_TASK_POOL    *thread_task_pool, 
-    pal_uintptr_t         worker_pool_context, 
-    pal_uintptr_t             *thread_context
+    void                        *init_context, 
+    void                     **thread_context
 );
 
 /* @summary Define the signature for the entry point of a task.
@@ -188,7 +188,7 @@ typedef struct PAL_TASK_SCHEDULER_INIT {
     pal_uint32_t                  PoolTypeCount;        /* The number of pool types specified in the TaskPoolTypes array. */
     struct PAL_TASK_POOL_INIT    *TaskPoolTypes;        /* An array of PoolTypeCount PAL_TASK_POOL_INIT structures, one per pool type. */
     void                         *CreateContext;        /* Opaque data to be passed through to the AioWorkerInitFunc and CpuWorkerInitFunc callbacks during thread initialization. */
-} PAL_TASK_POOL_MANAGER_INIT;
+} PAL_TASK_SCHEDULER_INIT;
 
 /* @summary Define the supported completion types for a task.
  */
