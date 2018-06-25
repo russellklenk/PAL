@@ -222,6 +222,10 @@ int main
     pal_sint32_t                   exit_code = ERROR_SUCCESS;
     pal_usize_t                  global_size = Megabytes(16);
     pal_usize_t                 scratch_size = Kilobytes(128);
+
+    PAL_TASK_POOL *main_pool = NULL;
+    PAL_TASKID *id_list = NULL;
+    pal_uint32_t i, j, n;
 #if 0
     int                                  res;
 #endif
@@ -262,6 +266,14 @@ int main
     PAL_MemoryArenaCreate(&global_arena, &global_arena_init);
 
     sched = CreateTaskScheduler(ALLOW_MULTI_CORE, PRINT_CONFIGURATION);
+    id_list = PAL_MemoryArenaAllocateHostArray(&global_arena, PAL_TASKID, 1024);
+    main_pool = PAL_TaskSchedulerAcquireTaskPool(sched, PAL_TASK_POOL_TYPE_ID_MAIN, 0);
+    for (j = 0; j < 1024; ++j) {
+        PAL_TaskCreate(main_pool, id_list, 1024);
+        for (i = 0, n = 1024; i < n; ++i) {
+            PAL_TaskDelete(main_pool, id_list[i]);
+        }
+    }
     DeleteTaskScheduler(sched);
 
     /* execute functional tests */
