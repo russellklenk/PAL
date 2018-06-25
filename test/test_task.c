@@ -58,14 +58,14 @@ AioWorkerThreadInit
 (
     struct PAL_TASK_SCHEDULER   *scheduler, 
     struct PAL_TASK_POOL *thread_task_pool, 
-    pal_uintptr_t             init_context, 
-    pal_uintptr_t      *out_thread_context
+    void                     *init_context, 
+    void              **out_thread_context
 )
 {
     PAL_UNUSED_ARG(scheduler);
     PAL_UNUSED_ARG(thread_task_pool);
     PAL_UNUSED_ARG(init_context);
-    PAL_Assign(out_thread_context, 0);
+    PAL_Assign(out_thread_context, NULL);
     return 0;
 }
 
@@ -82,14 +82,14 @@ CpuWorkerThreadInit
 (
     struct PAL_TASK_SCHEDULER   *scheduler, 
     struct PAL_TASK_POOL *thread_task_pool, 
-    pal_uintptr_t             init_context, 
-    pal_uintptr_t      *out_thread_context
+    void                     *init_context, 
+    void              **out_thread_context
 )
 {
     PAL_UNUSED_ARG(scheduler);
     PAL_UNUSED_ARG(thread_task_pool);
     PAL_UNUSED_ARG(init_context);
-    PAL_Assign(out_thread_context, 0);
+    PAL_Assign(out_thread_context, NULL);
     return 0;
 }
 

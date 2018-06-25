@@ -7,18 +7,20 @@
 
 #include <process.h>
 
+/* @summary Define the value sent to the completion port and received in the lpCompletionKey parameter of GetQueuedCompletionStatus when the thread should terminate.
+ */
 #ifndef PAL_COMPLETION_KEY_SHUTDOWN
 #   define PAL_COMPLETION_KEY_SHUTDOWN    PAL_TASKID_NONE
 #endif
 
+/* @summary Define the value sent to the completion port and received in the lpCompletionKey parameter of GetQueuedCompletionStatus when the thread receives a task ID.
+ */
 #ifndef PAL_COMPLETION_KEY_TASKID
 #   define PAL_COMPLETION_KEY_TASKID     (~(ULONG_PTR) 1)
 #endif
 
-#ifdef PAL_TASKID_SHUTDOWN
-#   define PAL_TASKID_SHUTDOWN            PAL_TASKID_NONE
-#endif
-
+/* @summary Define the number of slots committed when the task pool storage needs to grow.
+ */
 #ifndef PAL_TASK_CHUNK_SIZE
 #   define PAL_TASK_CHUNK_SIZE            1024U
 #endif
@@ -96,14 +98,14 @@ PAL_DefaultTaskWorkerInit
 (
     struct PAL_TASK_SCHEDULER *task_scheduler, 
     struct PAL_TASK_POOL    *thread_task_pool, 
-    pal_uintptr_t                init_context, 
-    pal_uintptr_t             *thread_context
+    void                        *init_context, 
+    void                     **thread_context
 )
 {
     PAL_UNUSED_ARG(task_scheduler);
     PAL_UNUSED_ARG(thread_task_pool);
     PAL_UNUSED_ARG(init_context);
-    PAL_Assign(thread_context, 0);
+    PAL_Assign(thread_context, NULL);
     return 0;
 }
 
@@ -198,8 +200,18 @@ park_thread:
 }
 #endif
 
+/* @summary Attempt to park (put to sleep) a worker thread.
+ * Worker threads are only put into a wait state when there's no work available.
+ * This function should be called when a worker runs out of work in its local ready-to-run queue.
+ * @param scheduler The PAL_TASK_SCHEDULER managing the scheduler state.
+ * @param worker_pool The PAL_TASK_POOL owned by the calling thread, which will be parked if no work is available.
+ * @param steal_list An array of values to populate with candidate victim pool indices.
+ * @param max_steal_list The maximum number of items that can be written to steal_list.
+ * @param num_steal_list On return, the number of valid entries in the steal list is stored in this location.
+ * @return One of the values of the PAL_TASK_SCHEDULER_PARK_RESULT enumeration.
+ */
 static pal_sint32_t
-PAL_TaskSchedulerParkWorker /* to be called when a worker runs out of work in its local RTR deque */
+PAL_TaskSchedulerParkWorker
 (
     struct PAL_TASK_SCHEDULER *scheduler, 
     struct PAL_TASK_POOL    *worker_pool, 
@@ -214,6 +226,8 @@ PAL_TaskSchedulerParkWorker /* to be called when a worker runs out of work in it
     pal_uint32_t  pool_count = scheduler->TaskPoolCount;
     pal_uint32_t     n_steal = 0;
     pal_sint32_t   THRESHOLD = 1;
+    DWORD            wait_rc = WAIT_OBJECT_0;
+    pal_uint32_t        i, n;
 
     _ReadWriteBarrier();
     if (max_steal_list > 0) {
@@ -227,24 +241,72 @@ PAL_TaskSchedulerParkWorker /* to be called when a worker runs out of work in it
             }
             if (n_steal == 0) {
                 if ((value = (pal_uint64_t)_InterlockedCompareExchange64((volatile LONGLONG*) &scheduler->ReadyEventCount, (LONGLONG) event_count, (LONGLONG) event_count)) == event_count) {
+                    /* no events have been published, and we didn't find any victim candidates */
                     goto park_thread;
                 }
             }
         } while (n_steal == 0);
     }
-    if (n_steal > 0) {
-        return PAL_TASK_SCHEDULER_PARK_RESULT_TRY_STEAL;
-    }
+    PAL_Assign(num_steal_list, n_steal);
+    return PAL_TASK_SCHEDULER_PARK_RESULT_TRY_STEAL;
 
 park_thread:
-    PAL_SemaphoreWait(&worker_pool->ParkSem);
-    if (scheduler->ShutdownSignal) {
-        /* woken due to shutdown */
-        return PAL_TASK_SCHEDULER_PARK_RESULT_SHUTDOWN;
+    if ((wait_rc = WaitForSingleObject(worker_pool->ParkSemaphore, INFINITE)) == WAIT_OBJECT_0) {
+        if (scheduler->ShutdownSignal) {
+            /* woken due to shutdown */
+            PAL_Assign(num_steal_list, 0);
+            return PAL_TASK_SCHEDULER_PARK_RESULT_SHUTDOWN;
+        } else {
+            /* woken due to work item */
+            PAL_Assign(num_steal_list, 0);
+            return PAL_TASK_SCHEDULER_PARK_RESULT_WAKE_TASK;
+        }
     } else {
-        /* woken due to work item */
-        return PAL_TASK_SCHEDULER_PARK_RESULT_WAKE_TASK;
+        /* some error occurred while waiting */
+        PAL_Assign(num_steal_list, 0);
+        return PAL_TASK_SCHEDULER_PARK_RESULT_SHUTDOWN;
     }
+}
+
+/* @summary Attempt to steal work from another thread's ready-to-run queue.
+ * @param scheduler The PAL_TASK_SCHEDULER managing the set of PAL_TASK_POOL instances.
+ * @param worker_pool The PAL_TASK_POOL bound to the thread that is attempting to steal work.
+ * @param steal_list An array of task pool indicies representing the set of victim candidates.
+ * @param num_steal_list The number of valid entries in the steal_list array.
+ * @param start_index The zero-based index within steal_list at which the first steal attempt should be made.
+ * @param next_start On return, this location is updated with the next value to supply for start_index.
+ * @return A valid task ID, or PAL_TASKID_NONE if no work could be stolen.
+ */
+static PAL_TASKID
+PAL_TaskSchedulerStealWork
+(
+    struct PAL_TASK_SCHEDULER *scheduler, 
+    struct PAL_TASK_POOL    *worker_pool, 
+    pal_uint32_t const       *steal_list, 
+    pal_uint32_t const    num_steal_list, 
+    pal_uint32_t             start_index, 
+    pal_uint32_t             *next_start
+)
+{
+    PAL_TASK_POOL  **pool_list = scheduler->TaskPoolList;
+    PAL_TASK_POOL *victim_pool = NULL;
+    PAL_TASKID     stolen_task = PAL_TASKID_NONE;
+    pal_uint32_t          i, n;
+
+    if (start_index >= num_steal_list) {
+        /* reset to the start of the list */
+        start_index  = 0;
+    }
+    /* attempt to steal work from one of the candidate victims */
+    for (i = start_index, n = num_steal_list; i < n; ++i) {
+        victim_pool = pool_list[steal_list[i]];
+        stolen_task = PAL_TASKID_NONE;
+        /* if successful, InterlockedDecrement TaskPoolERTR[steal_list[i]] */
+    }
+    /* processed the entire steal_list with no success */
+    PAL_UNUSED_ARG(worker_pool);
+    PAL_Assign(next_start, 0);
+    return PAL_TASKID_NONE;
 }
 
 /* @summary Implement the entry point for a worker thread that processes primarily non-blocking work.
@@ -262,10 +324,17 @@ PAL_CpuWorkerThreadMain
     PAL_TASK_SCHEDULER    *scheduler = init->TaskScheduler;
     PAL_TASK_POOL       *thread_pool = NULL;
     void                 *thread_ctx = NULL;
+    unsigned int           exit_code = 0;
+    PAL_TASKID          current_task = PAL_TASKID_NONE;
     pal_sint32_t        pool_type_id = PAL_TASK_POOL_TYPE_ID_CPU_WORKER;
     pal_uint32_t     pool_bind_flags = PAL_TASK_POOL_BIND_FLAGS_NONE;
-    unsigned int           exit_code = 0;
-    pal_sint32_t         wake_reason;
+    pal_sint32_t         wake_reason = PAL_TASK_SCHEDULER_PARK_RESULT_WAKE_TASK;
+    pal_uint32_t         steal_count = 0;
+    pal_uint32_t         steal_index = 0;
+    pal_uint32_t         steal_list[4];
+
+    /* */
+    PAL_SetCurrentThreadName("CPU Worker");
 
     /* acquire a pool of type CPU_WORKER - if this fails, execution cannot proceed */
     if ((thread_pool = PAL_TaskSchedulerAcquireTaskPool(scheduler, pool_type_id, pool_bind_flags)) == NULL) {
@@ -287,22 +356,30 @@ PAL_CpuWorkerThreadMain
 
     __try {
         while (scheduler->ShutdownSignal == 0) {
-            /* do work */
+            /* wait for work to become available */
+            switch ((wake_reason = PAL_TaskSchedulerParkWorker(scheduler, thread_pool, steal_list, PAL_CountOf(steal_list), &steal_count))) {
+                case PAL_TASK_SCHEDULER_PARK_RESULT_SHUTDOWN:
+                    { current_task = PAL_TASKID_NONE;
+                    } break;
+                case PAL_TASK_SCHEDULER_PARK_RESULT_TRY_STEAL:
+                    { current_task = PAL_TaskSchedulerStealWork(scheduler, thread_pool, steal_list, steal_count, steal_index, &steal_index);
+                    } break;
+                case PAL_TASK_SCHEDULER_PARK_RESULT_WAKE_TASK:
+                    { current_task = (PAL_TASKID)_InterlockedExchange((volatile LONG*) &thread_pool->WakeupTaskId, PAL_TASKID_NONE);
+                    } break;
+                default:
+                    { current_task = PAL_TASKID_NONE;
+                    } break;
+            }
+            if (current_task != PAL_TASKID_NONE) {
+                /* execute the current task */
+            }
         }
     } 
     __finally {
         PAL_TaskSchedulerReleaseTaskPool(scheduler, thread_pool);
         return exit_code;
     }
-static pal_sint32_t
-PAL_TaskSchedulerParkWorker /* to be called when a worker runs out of work in its local RTR deque */
-(
-    struct PAL_TASK_SCHEDULER *scheduler, 
-    struct PAL_TASK_POOL    *worker_pool, 
-    pal_uint32_t             *steal_list, 
-    pal_uint32_t          max_steal_list, 
-    pal_uint32_t         *num_steal_list
-)
 }
 
 /* @summary Implement the entry point for a worker thread that processes blocking or asynchronous I/O work.
@@ -327,6 +404,9 @@ PAL_AioWorkerThreadMain
     ULONG_PTR                    key = 0;
     DWORD                     nbytes = 0;
     unsigned int           exit_code = 0;
+
+    /* */
+    PAL_SetCurrentThreadName("I/O Worker");
 
     /* acquire a pool of type AIO_WORKER - if this fails, execution cannot proceed */
     if ((thread_pool = PAL_TaskSchedulerAcquireTaskPool(scheduler, pool_type_id, pool_bind_flags)) == NULL) {
@@ -402,6 +482,7 @@ PAL_TaskSchedulerTerminateWorkers
             nwake = n - owake;
         }
         WaitForMultipleObjects(nwake, &scheduler->OsWorkerThreadHandles[owake], TRUE, INFINITE);
+        owake += nwake;
     }
 
     /* close thread handles */
@@ -839,7 +920,7 @@ PAL_TaskSchedulerAcquireTaskPool
     
     if (task_pool != NULL) {
         PAL_TASK_DATA *task_data = task_pool->TaskSlotData;
-        pal_uint16 _t  *slot_ids = task_pool->AllocSlotIds;
+        pal_uint16_t   *slot_ids = task_pool->AllocSlotIds;
 
         if ((bind_flags & PAL_TASK_POOL_BIND_FLAG_MANUAL) == 0) {
             PAL_TaskSchedulerBindPoolToThread(scheduler, task_pool, PAL_GetCurrentThreadId());
