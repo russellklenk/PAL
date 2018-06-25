@@ -45,7 +45,7 @@ typedef struct PAL_CACHELINE_ALIGN PAL_TASK_POOL {
     struct PAL_TASK_POOL          *NextFreePool;             /* A pointer to the next available pool of the same type. This value is only valid if the pool is not in use, otherwise it is set to NULL. */
     struct PAL_TASK_DATA          *TaskSlotData;             /* A pointer to the start of the memory block used to store task data. Some portion of this data may only be reserved and not committed. */
     PAL_TASKID                    *ReadyTaskIds;             /* The storage for a single-producer, multi-consumer concurrent queue storing the IDs of ready-to-run tasks. Pre-committed to maximum capacity. */
-    pal_uint16_t                  *AllocSlotIds;             /* The storage for a multi-producer, single-consumer concurrent queue storing the slot indices of available slots in TaskSlotData. */
+    pal_uint32_t                  *AllocSlotIds;             /* The storage for a multi-producer, single-consumer concurrent queue storing the slot indices of available slots in TaskSlotData. */
     HANDLE                         ParkSemaphore;            /* The scheduler semaphore used to park the worker thread. Used only by CPU worker threads. */
     pal_uint32_t                   OsThreadId;               /* The operating system thread identifier of the thread bound to the task pool. */
     pal_sint32_t                   PoolTypeId;               /* One of the values of the PAL_TASK_POOL_TYPE_ID enumeration. Used mainly for debugging purposes. */
