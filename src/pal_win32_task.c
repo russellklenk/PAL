@@ -11,9 +11,21 @@
 #   define PAL_COMPLETION_KEY_SHUTDOWN    PAL_TASKID_NONE
 #endif
 
+#ifndef PAL_COMPLETION_KEY_TASKID
+#   define PAL_COMPLETION_KEY_TASKID     (~(ULONG_PTR) 1)
+#endif
+
 #ifdef PAL_TASKID_SHUTDOWN
 #   define PAL_TASKID_SHUTDOWN            PAL_TASKID_NONE
 #endif
+
+#ifndef PAL_TASK_CHUNK_SIZE
+#   define PAL_TASK_CHUNK_SIZE            1024U
+#endif
+
+/* @summary Define the signature of a thread entry point.
+ */
+typedef unsigned int (__stdcall *Win32_ThreadMain_Func)(void*);
 
 /* @summary Define a structure for maintaining counts of the various pool types.
  */
@@ -66,9 +78,11 @@ typedef struct PAL_AIO_WORKER_THREAD_INIT {
     HANDLE                     CompletionPort;      /* The I/O completion port to monitor for work and completion notifications. */
 } PAL_AIO_WORKER_THREAD_INIT;
 
-/* @summary Define the signature of a thread entry point.
- */
-typedef unsigned int (__stdcall *Win32_ThreadMain_Func)(void*);
+typedef enum PAL_TASK_SCHEDULER_PARK_RESULT {
+    PAL_TASK_SCHEDULER_PARK_RESULT_SHUTDOWN   =  0, /* The thread was woken up because the scheduler is being shutdown. */
+    PAL_TASK_SCHEDULER_PARK_RESULT_TRY_STEAL  =  1, /* The scheduler produced a list of at least one pool with available tasks; the thread should attempt to steal some work. */
+    PAL_TASK_SCHEDULER_PARK_RESULT_WAKE_TASK  =  2, /* The thread was woken up and should check the task pool's WakeupTaskId field for a task to execute. */
+} PAL_TASK_SCHEDULER_PARK_RESULT;
 
 /* @summary Implement a default thread initialization function.
  * @param task_scheduler The task scheduler that owns the worker thread.
@@ -184,6 +198,55 @@ park_thread:
 }
 #endif
 
+static pal_sint32_t
+PAL_TaskSchedulerParkWorker /* to be called when a worker runs out of work in its local RTR deque */
+(
+    struct PAL_TASK_SCHEDULER *scheduler, 
+    struct PAL_TASK_POOL    *worker_pool, 
+    pal_uint32_t             *steal_list, 
+    pal_uint32_t          max_steal_list, 
+    pal_uint32_t         *num_steal_list
+)
+{
+    pal_sint32_t  *est_count = scheduler->TaskPoolERTR;
+    pal_uint64_t event_count = scheduler->ReadyEventCount;
+    pal_uint64_t       value = scheduler->ReadyEventCount;
+    pal_uint32_t  pool_count = scheduler->TaskPoolCount;
+    pal_uint32_t     n_steal = 0;
+    pal_sint32_t   THRESHOLD = 1;
+
+    _ReadWriteBarrier();
+    if (max_steal_list > 0) {
+        do {
+            for (i = 0, n = pool_count; i < n; ++i) {
+                if (est_count[i] > THRESHOLD) {
+                    steal_list[n_steal++] = i;
+                    if (n_steal == max_steal_list)
+                        break;
+                }
+            }
+            if (n_steal == 0) {
+                if ((value = (pal_uint64_t)_InterlockedCompareExchange64((volatile LONGLONG*) &scheduler->ReadyEventCount, (LONGLONG) event_count, (LONGLONG) event_count)) == event_count) {
+                    goto park_thread;
+                }
+            }
+        } while (n_steal == 0);
+    }
+    if (n_steal > 0) {
+        return PAL_TASK_SCHEDULER_PARK_RESULT_TRY_STEAL;
+    }
+
+park_thread:
+    PAL_SemaphoreWait(&worker_pool->ParkSem);
+    if (scheduler->ShutdownSignal) {
+        /* woken due to shutdown */
+        return PAL_TASK_SCHEDULER_PARK_RESULT_SHUTDOWN;
+    } else {
+        /* woken due to work item */
+        return PAL_TASK_SCHEDULER_PARK_RESULT_WAKE_TASK;
+    }
+}
+
 /* @summary Implement the entry point for a worker thread that processes primarily non-blocking work.
  * @param argp A pointer to a PAL_CPU_WORKER_THREAD_INIT structure.
  * The data pointed to is valid only until the thread signals the Ready or Error event.
@@ -202,6 +265,7 @@ PAL_CpuWorkerThreadMain
     pal_sint32_t        pool_type_id = PAL_TASK_POOL_TYPE_ID_CPU_WORKER;
     pal_uint32_t     pool_bind_flags = PAL_TASK_POOL_BIND_FLAGS_NONE;
     unsigned int           exit_code = 0;
+    pal_sint32_t         wake_reason;
 
     /* acquire a pool of type CPU_WORKER - if this fails, execution cannot proceed */
     if ((thread_pool = PAL_TaskSchedulerAcquireTaskPool(scheduler, pool_type_id, pool_bind_flags)) == NULL) {
@@ -222,7 +286,6 @@ PAL_CpuWorkerThreadMain
     SetEvent(init->ReadySignal); init = NULL;
 
     __try {
-        /* main loop */
         while (scheduler->ShutdownSignal == 0) {
             /* do work */
         }
@@ -231,6 +294,15 @@ PAL_CpuWorkerThreadMain
         PAL_TaskSchedulerReleaseTaskPool(scheduler, thread_pool);
         return exit_code;
     }
+static pal_sint32_t
+PAL_TaskSchedulerParkWorker /* to be called when a worker runs out of work in its local RTR deque */
+(
+    struct PAL_TASK_SCHEDULER *scheduler, 
+    struct PAL_TASK_POOL    *worker_pool, 
+    pal_uint32_t             *steal_list, 
+    pal_uint32_t          max_steal_list, 
+    pal_uint32_t         *num_steal_list
+)
 }
 
 /* @summary Implement the entry point for a worker thread that processes blocking or asynchronous I/O work.
@@ -248,9 +320,12 @@ PAL_AioWorkerThreadMain
     PAL_TASK_SCHEDULER    *scheduler = init->TaskScheduler;
     PAL_TASK_POOL       *thread_pool = NULL;
     void                 *thread_ctx = NULL;
+    OVERLAPPED                   *ov = NULL;
     HANDLE                      iocp = init->CompletionPort;
     pal_sint32_t        pool_type_id = PAL_TASK_POOL_TYPE_ID_AIO_WORKER;
     pal_uint32_t     pool_bind_flags = PAL_TASK_POOL_BIND_FLAGS_NONE;
+    ULONG_PTR                    key = 0;
+    DWORD                     nbytes = 0;
     unsigned int           exit_code = 0;
 
     /* acquire a pool of type AIO_WORKER - if this fails, execution cannot proceed */
@@ -270,9 +345,17 @@ PAL_AioWorkerThreadMain
     SetEvent(init->ReadySignal); init = NULL;
 
     __try {
-        /* main loop */
         while (scheduler->ShutdownSignal == 0) {
-            /* do work */
+            /* wait for events on the I/O completion port */
+            if (GetQueuedCompletionStatus(iocp, &nbytes, &key, &ov, INFINITE)) {
+                if (key == PAL_COMPLETION_KEY_TASKID) {
+                    /* execute a task; nbytes is the task ID */
+                } else if (ov != NULL) {
+                    /* an asynchronous I/O request has completed */
+                } else if (key == PAL_COMPLETION_KEY_SHUTDOWN) {
+                    break;
+                }
+            }
         }
     } 
     __finally {
@@ -414,7 +497,7 @@ PAL_TaskSchedulerQueryMemorySize
     reserve_size += PAL_AllocationSizeArray(pal_uint32_t           , count_info->TotalPoolCount); /* PoolThreadId  */
     reserve_size += PAL_AllocationSizeArray(pal_uint32_t           , init->CpuWorkerThreadCount); /* ParkedPoolIds */
     reserve_size += PAL_AllocationSizeArray(PAL_TASK_POOL_FREE_LIST, init->PoolTypeCount);        /* PoolFreeList  */
-    reserve_size += PAL_AllocationSizeArray(pal_uint32_t           , init->PoolTypeCount);        /* PoolTypeIds   */
+    reserve_size += PAL_AllocationSizeArray(pal_sint32_t           , init->PoolTypeCount);        /* PoolTypeIds   */
     reserve_size += PAL_AllocationSizeArray(unsigned int           , thread_count);               /* OsWorkerThreadIds */
     reserve_size += PAL_AllocationSizeArray(HANDLE                 , thread_count);               /* OsWorkerThreadHandles */
     reserve_size += PAL_AllocationSizeArray(HANDLE                 , init->CpuWorkerThreadCount); /* WorkerParkSemaphores */
@@ -521,7 +604,7 @@ PAL_TaskSchedulerCreate
     scheduler->PoolTypeCount        = init->PoolTypeCount;
     scheduler->ParkedPoolIds        = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, pal_uint32_t           , init->CpuWorkerThreadCount);
     scheduler->PoolFreeList         = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, PAL_TASK_POOL_FREE_LIST, init->PoolTypeCount);
-    scheduler->PoolTypeIds          = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, pal_uint32_t           , init->PoolTypeCount);
+    scheduler->PoolTypeIds          = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, pal_sint32_t           , init->PoolTypeCount);
     scheduler->TaskPoolBase         = pool_base;
     scheduler->OsWorkerThreadIds    = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, unsigned int  , worker_thread_count);
     scheduler->OsWorkerThreadHandles= PAL_MemoryArenaAllocateHostArray(&scheduler_arena, HANDLE        , worker_thread_count);
@@ -539,7 +622,7 @@ PAL_TaskSchedulerCreate
     /* initialize the task pools */
     for (type_index = 0, type_count = init->PoolTypeCount; type_index < type_count; ++type_index) {
         PAL_TASK_POOL_INIT    *type =&init->TaskPoolTypes [type_index];
-        pal_uint32_t     chunk_size = 1024;
+        pal_uint32_t     chunk_size = PAL_TASK_CHUNK_SIZE;
         pal_uint32_t    chunk_count =(type->PreCommitTasks + (chunk_size-1)) / chunk_size;
         pal_usize_t     commit_size = pool_size.CommitSize;
 
@@ -721,5 +804,110 @@ PAL_TaskSchedulerDelete
         }
         VirtualFree(scheduler, 0, MEM_RELEASE);
     }
+}
+
+PAL_API(struct PAL_TASK_POOL*)
+PAL_TaskSchedulerAcquireTaskPool
+(
+    struct PAL_TASK_SCHEDULER *scheduler, 
+    pal_sint32_t            pool_type_id, 
+    pal_uint32_t              bind_flags
+)
+{
+    PAL_TASK_POOL_FREE_LIST *free_list = NULL;
+    PAL_TASK_POOL           *task_pool = NULL;
+    pal_sint32_t const   *type_id_list = scheduler->PoolTypeIds;
+    pal_uint32_t            free_count = 0;
+    pal_uint32_t                  i, n;
+
+    for (i = 0, n = scheduler->PoolTypeCount; i < n; ++i) {
+        if (pool_type_id == type_id_list[i]) {
+            free_list = &scheduler->PoolFreeList[i];
+            break;
+        }
+    }
+    if (free_list == NULL) {
+        /* invalid type ID */
+        return NULL;
+    }
+    AcquireSRWLockExclusive(&free_list->TypeLock); {
+        if ((task_pool = free_list->FreeListHead) != NULL) {
+            free_list->FreeListHead = task_pool->NextFreePool;
+            task_pool->NextFreePool = NULL;
+        }
+    } ReleaseSRWLockExclusive(&free_list->TypeLock);
+    
+    if (task_pool != NULL) {
+        PAL_TASK_DATA *task_data = task_pool->TaskSlotData;
+        pal_uint16 _t  *slot_ids = task_pool->AllocSlotIds;
+
+        if ((bind_flags & PAL_TASK_POOL_BIND_FLAG_MANUAL) == 0) {
+            PAL_TaskSchedulerBindPoolToThread(scheduler, task_pool, PAL_GetCurrentThreadId());
+        } else {
+            task_pool->OsThreadId = 0;
+        }
+
+        /* initialize all of the task state and free lists */
+        free_count   = task_pool->CommitCount * PAL_TASK_CHUNK_SIZE;
+        PAL_ZeroMemory(task_data , free_count * sizeof(PAL_TASK_DATA));
+        for (i = 0; i < free_count; ++i) {
+            slot_ids[i] = (pal_uint16_t) i;
+        }
+
+        /* initialize the queues and counters */
+        task_pool->WakeupTaskId    = PAL_TASKID_NONE;
+        task_pool->AllocCount      = 0;
+        task_pool->AllocNext       = 0;
+        task_pool->ReadyPublicPos  = 0;
+        task_pool->ReadyPrivatePos = 0;
+       _InterlockedExchange64((volatile LONGLONG*) &task_pool->FreeCount, (LONGLONG) free_count);
+    }
+    return task_pool;
+}
+
+PAL_API(void)
+PAL_TaskSchedulerReleaseTaskPool
+(
+    struct PAL_TASK_SCHEDULER *scheduler, 
+    struct PAL_TASK_POOL      *task_pool
+)
+{
+    if (task_pool != NULL) { 
+        PAL_TASK_POOL_FREE_LIST *free_list = NULL;
+        pal_sint32_t const   *type_id_list = scheduler->PoolTypeIds;
+        pal_sint32_t          pool_type_id = task_pool->PoolTypeId;
+        pal_uint32_t                  i, n;
+
+        for (i = 0, n = scheduler->PoolTypeCount; i < n; ++i) {
+            if (pool_type_id == type_id_list[i]) {
+                free_list = &scheduler->PoolFreeList[i];
+                break;
+            }
+        }
+        if (free_list == NULL) {
+            return;
+        }
+        /* clear the thread bindings */
+        task_pool->OsThreadId = 0;
+        scheduler->PoolThreadId[task_pool->PoolIndex] = 0;
+        /* return the pool to the free list */
+        AcquireSRWLockExclusive(&free_list->TypeLock); {
+            task_pool->NextFreePool = free_list->FreeListHead;
+            free_list->FreeListHead = task_pool;
+        } ReleaseSRWLockExclusive(&free_list->TypeLock);
+    }
+}
+
+PAL_API(int)
+PAL_TaskSchedulerBindPoolToThread
+(
+    struct PAL_TASK_SCHEDULER *scheduler, 
+    struct PAL_TASK_POOL           *pool, 
+    pal_uint32_t            os_thread_id
+)
+{
+    pool->OsThreadId = os_thread_id;
+    scheduler->PoolThreadId[pool->PoolIndex] = os_thread_id;
+    return 0;
 }
 
