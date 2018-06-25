@@ -113,7 +113,7 @@ typedef struct PAL_TASK_SCHEDULER {
     pal_uint32_t                     PoolTypeCount;            /* The number of distinct task pool types. */
     pal_uint32_t                    *ParkedPoolIds;            /* An array of CpuWorkerCount pool indices representing a LIFO (stack) of parked worker threads. */
     struct PAL_TASK_POOL_FREE_LIST  *PoolFreeList;             /* An array containing the free list for each task pool type. */
-    pal_uint32_t                    *PoolTypeIds;              /* An array specifying the PAL_TASK_POOL_TYPE_ID for each free list. */
+    pal_sint32_t                    *PoolTypeIds;              /* An array specifying the PAL_TASK_POOL_TYPE_ID for each free list. */
     pal_uint8_t                     *TaskPoolBase;             /* The base address of the first PAL_TASK_POOL. */
     /* ---- */
     unsigned int                    *OsWorkerThreadIds;        /* An array of CpuWorkerCount+AioWorkerCount operating system identifiers for the worker threads. */
