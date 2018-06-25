@@ -25,6 +25,40 @@
 #   define PAL_TASK_CHUNK_SIZE            1024U
 #endif
 
+/* @summary Define the maximum number of task chunks that can be committed for a task pool.
+ */
+#ifndef PAL_TASK_CHUNK_COUNT
+#   define PAL_TASK_CHUNK_COUNT          (PAL_TASKID_MAX_SLOTS_PER_POOL / PAL_TASK_CHUNK_SIZE)
+#endif
+
+/* @summary Extract the PAL_TASK_DATA array index value from a freelist value.
+ * @param _flval The freelist value read from PAL_TASK_POOL::AllocSlotIds.
+ * @return The zero-based index of the free entry in PAL_TASK_POOL::TaskSlotData.
+ */
+#ifndef PAL_TaskSlotGetSlotIndex
+#define PAL_TaskSlotGetSlotIndex(_flval)                                       \
+    (((_flval) & 0xFFFF0000UL) >> 16)
+#endif
+
+/* @summary Extract the slot generation from a freelist value.
+ * @param _flval The freelist value read from PAL_TASK_POOL::AllocSlotIds.
+ * @return The generation value to assign to the next ID using the associated entry in PAL_TASK_POOL::TaskSlotData.
+ */
+#ifndef PAL_TaskSlotGetSlotGeneration
+#define PAL_TaskSlotGetSlotGeneration(_flval)                                  \
+    (((_flval) & 0x0000FFFFUL))
+#endif
+
+/* @summary Generate a packed freelist value from a slot index and generation.
+ * @param _slot The zero-based index of the free entry in PAL_TASK_POOL::TaskSlotData.
+ * @param _gen The next generation value to assign to the slot.
+ * @return The value to write to the PAL_TASK_POOL::AllocSlotIds array.
+ */
+#ifndef PAL_TaskSlotPack
+#define PAL_TaskSlotPack(_slot, _gen)                                          \
+    (((_slot) << 16) | (_gen))
+#endif
+
 /* @summary Define the signature of a thread entry point.
  */
 typedef unsigned int (__stdcall *Win32_ThreadMain_Func)(void*);
@@ -80,6 +114,8 @@ typedef struct PAL_AIO_WORKER_THREAD_INIT {
     HANDLE                     CompletionPort;      /* The I/O completion port to monitor for work and completion notifications. */
 } PAL_AIO_WORKER_THREAD_INIT;
 
+/* @summary Define the result values that can be returned from PAL_TaskSchedulerParkWorker.
+ */
 typedef enum PAL_TASK_SCHEDULER_PARK_RESULT {
     PAL_TASK_SCHEDULER_PARK_RESULT_SHUTDOWN   =  0, /* The thread was woken up because the scheduler is being shutdown. */
     PAL_TASK_SCHEDULER_PARK_RESULT_TRY_STEAL  =  1, /* The scheduler produced a list of at least one pool with available tasks; the thread should attempt to steal some work. */
@@ -199,6 +235,132 @@ park_thread:
      * to indicate that it should attempt to steal from the listed pools. */
 }
 #endif
+
+/* @summary Return a task slot to the free list for the owning task pool.
+ * @param thread_pool The PAL_TASK_POOL from which the task slot was allocated.
+ * @param slot_index The zero-based index of the PAL_TASK_DATA slot to mark as available.
+ * @param generation The generation value associated with the PAL_TASK_DATA slot.
+ */
+static void
+PAL_TaskPoolMakeTaskSlotFree /* this only does the return - not the generation update */
+(
+    struct PAL_TASK_POOL *thread_pool, 
+    pal_uint32_t           slot_index, 
+    pal_uint32_t           generation
+)
+{
+    pal_uint32_t      packed = PAL_TaskSlotPack(slot_index, generation);
+    pal_uint32_t *free_slots = thread_pool->AllocSlotIds;
+    pal_uint64_t   write_pos = thread_pool->FreeCount;
+    pal_uint64_t       value;
+    
+    _ReadWriteBarrier(); /* load-acquire */
+
+    for ( ; ; ) {
+        /* write the slot_index to the AllocSlotIds list */
+        free_slots[write_pos & 0xFFFF] = packed;
+        /* attempt to update and 'claim' the free count */
+        if ((value =(pal_uint64_t)_InterlockedCompareExchange64((volatile LONGLONG*)&thread_pool->FreeCount, (LONGLONG)(write_pos+1), (LONGLONG) write_pos)) == write_pos) {
+            /* the count was successfully updated */
+            return;
+        }
+        /* try again with a new write position */
+        write_pos = value;
+    }
+}
+
+/* @summary Push the task ID of a ready-to-run task onto the private end of the ready-to-run deque.
+ * This thread can only be called by the thread that owns the supplied PAL_TASK_POOL.
+ * @param worker_pool The PAL_TASK_POOL bound to the thread that made the task ready-to-run.
+ * @param task_id The identifier of the ready-to-run task.
+ */
+static void
+PAL_TaskPoolPushReadyTask
+(
+    struct PAL_TASK_POOL *worker_pool, 
+    PAL_TASKID                task_id
+)
+{
+    PAL_TASKID  *stor = worker_pool->ReadyTaskIds;
+    pal_sint64_t mask = PAL_TASKID_MAX_SLOTS_PER_POOL - 1;
+    pal_sint64_t  pos = worker_pool->ReadyPrivatePos;
+    stor[pos & mask]  = task_id;
+    _ReadWriteBarrier();
+    worker_pool->ReadyPrivatePos = pos + 1;
+}
+
+/* @summary Attempt to take the task ID of a ready-to-run task from the private end of the ready-to-run deque.
+ * This function can only be called by the thread that owns the supplied PAL_TASK_POOL.
+ * @param worker_pool The PAL_TASK_POOL bound to the thread calling the function.
+ * @return The task identifier, or PAL_TASKID_NONE.
+ */
+static PAL_TASKID
+PAL_TaskPoolTakeReadyTask
+(
+    struct PAL_TASK_POOL *worker_pool
+)
+{
+    PAL_TASKID  *stor = worker_pool->ReadyTaskIds;
+    pal_sint64_t mask = PAL_TASKID_MAX_SLOTS_PER_POOL - 1;
+    pal_sint64_t  pos = worker_pool->ReadyPrivatePos  - 1;
+    pal_sint64_t  top;
+    PAL_TASKID    res = PAL_TASKID_NONE;
+
+    _InterlockedExchange64(&worker_pool->ReadyPrivatePos, pos);
+    top = worker_pool->ReadyPublicPos;
+
+    if (top <= pos) {
+        res  = stor[pos & mask];
+        if (top != pos) {
+            /* there's at least one more item in the deque - no need to race */
+            return res;
+        }
+        /* this was the final item in the deque - race a concurrent steal */
+        if (_InterlockedCompareExchange64(&worker_pool->ReadyPublicPos, top+1, top) == top) {
+            /* this thread won the race */
+            worker_pool->ReadyPrivatePos = top + 1;
+            return res;
+        } else {
+            /* this thread lost the race */
+            worker_pool->ReadyPrivatePos = top+ 1;
+            return PAL_TASKID_NONE;
+        }
+    } else {
+        /* the deque is currently empty */
+        worker_pool->ReadyPrivatePos = top;
+        return PAL_TASKID_NONE;
+    }
+}
+
+/* @summary Attempt to steal a ready-to-run task from the ready queue owned by another thread.
+ * This function can be called by any thread in the system.
+ * @param victim_pool The PAL_TASK_POOL to attempt to steal from.
+ * @return The task identifer of the stolen task, or PAL_TASKID_NONE.
+ */
+static PAL_TASKID
+PAL_TaskPoolStealReadyTask
+(
+    struct PAL_TASK_POOL *victim_pool
+)
+{
+    PAL_TASKID  *stor = victim_pool->ReadyTaskIds;
+    pal_sint64_t mask = PAL_TASKID_MAX_SLOTS_PER_POOL - 1;
+    pal_sint64_t  top = victim_pool->ReadyPublicPos;
+    _ReadWriteBarrier();
+    pal_sint64_t  pos = victim_pool->ReadyPrivatePos;
+    PAL_TASKID    res = PAL_TASKID_NONE;
+    if (top < pos) {
+        res = stor[top & mask];
+        if (_InterlockedCompareExchange64(&victim_pool->ReadyPublicPos, top+1, top) == top) {
+            /* this thread claims the item */
+            return res;
+        } else {
+            /* this thread lost the race */
+            return PAL_TASKID_NONE;
+        }
+    }
+    return PAL_TASKID_NONE;
+}
 
 /* @summary Attempt to park (put to sleep) a worker thread.
  * Worker threads are only put into a wait state when there's no work available.
@@ -333,7 +495,7 @@ PAL_CpuWorkerThreadMain
     pal_uint32_t         steal_index = 0;
     pal_uint32_t         steal_list[4];
 
-    /* */
+    /* set the thread name for diagnostics tools */
     PAL_SetCurrentThreadName("CPU Worker");
 
     /* acquire a pool of type CPU_WORKER - if this fails, execution cannot proceed */
@@ -405,7 +567,7 @@ PAL_AioWorkerThreadMain
     DWORD                     nbytes = 0;
     unsigned int           exit_code = 0;
 
-    /* */
+    /* set the thread name for diagnostics tools */
     PAL_SetCurrentThreadName("I/O Worker");
 
     /* acquire a pool of type AIO_WORKER - if this fails, execution cannot proceed */
@@ -509,7 +671,7 @@ PAL_TaskPoolQueryMemorySize
     udata_offset  = reserve_size;
     reserve_size  = PAL_AlignUp(reserve_size , page_size); /* user data */
     udata_size    = reserve_size - udata_offset;
-    reserve_size += PAL_AllocationSizeArray(pal_uint16_t , PAL_TASKID_MAX_SLOTS_PER_POOL); /* AllocSlotIds */
+    reserve_size += PAL_AllocationSizeArray(pal_uint32_t , PAL_TASKID_MAX_SLOTS_PER_POOL); /* AllocSlotIds */
     reserve_size += PAL_AllocationSizeArray(PAL_TASKID   , PAL_TASKID_MAX_SLOTS_PER_POOL); /* ReadyTaskIds */
     commit_size   = reserve_size;
     reserve_size += PAL_AllocationSizeArray(PAL_TASK_DATA, PAL_TASKID_MAX_SLOTS_PER_POOL); /* TaskSlotData */
@@ -749,7 +911,7 @@ PAL_TaskSchedulerCreate
             pool->TaskScheduler     = scheduler;
             pool->NextFreePool      = scheduler->PoolFreeList[type_index].FreeListHead;
             pool->UserDataBuffer    = PAL_MemoryArenaAllocateHostArray(&pool_arena, pal_uint8_t  , pool_size.UserDataSize);
-            pool->AllocSlotIds      = PAL_MemoryArenaAllocateHostArray(&pool_arena, pal_uint16_t , PAL_TASKID_MAX_SLOTS_PER_POOL);
+            pool->AllocSlotIds      = PAL_MemoryArenaAllocateHostArray(&pool_arena, pal_uint32_t , PAL_TASKID_MAX_SLOTS_PER_POOL);
             pool->ReadyTaskIds      = PAL_MemoryArenaAllocateHostArray(&pool_arena, PAL_TASKID   , PAL_TASKID_MAX_SLOTS_PER_POOL);
             pool->TaskSlotData      = PAL_MemoryArenaAllocateHostArray(&pool_arena, PAL_TASK_DATA, chunk_size * chunk_count);
             pool->ParkSemaphore     = NULL;
@@ -920,7 +1082,7 @@ PAL_TaskSchedulerAcquireTaskPool
     
     if (task_pool != NULL) {
         PAL_TASK_DATA *task_data = task_pool->TaskSlotData;
-        pal_uint16_t   *slot_ids = task_pool->AllocSlotIds;
+        pal_uint32_t   *slot_ids = task_pool->AllocSlotIds;
 
         if ((bind_flags & PAL_TASK_POOL_BIND_FLAG_MANUAL) == 0) {
             PAL_TaskSchedulerBindPoolToThread(scheduler, task_pool, PAL_GetCurrentThreadId());
@@ -932,7 +1094,7 @@ PAL_TaskSchedulerAcquireTaskPool
         free_count   = task_pool->CommitCount * PAL_TASK_CHUNK_SIZE;
         PAL_ZeroMemory(task_data , free_count * sizeof(PAL_TASK_DATA));
         for (i = 0; i < free_count; ++i) {
-            slot_ids[i] = (pal_uint16_t) i;
+            slot_ids[i] = PAL_TaskSlotPack(i, 0);
         }
 
         /* initialize the queues and counters */
@@ -990,5 +1152,115 @@ PAL_TaskSchedulerBindPoolToThread
     pool->OsThreadId = os_thread_id;
     scheduler->PoolThreadId[pool->PoolIndex] = os_thread_id;
     return 0;
+}
+
+PAL_API(int)
+PAL_TaskCreate
+(
+    struct PAL_TASK_POOL *thread_pool, 
+    PAL_TASKID          *task_id_list, 
+    pal_uint32_t           task_count
+)
+{
+    pal_uint32_t write_index = 0;
+    pal_uint32_t  pool_index = thread_pool->PoolIndex;
+    pal_uint32_t  *slot_list = thread_pool->AllocSlotIds;
+    pal_uint64_t   alloc_max = thread_pool->AllocCount;
+    pal_uint64_t   alloc_cur = thread_pool->AllocNext;
+    pal_uint32_t  slot_index;
+    pal_uint32_t  generation;
+    pal_uint32_t  freelist_v;
+
+    if (task_count <= PAL_TASKID_MAX_SLOTS_PER_POOL) { 
+        for ( ; ; ) {
+            if (alloc_cur == alloc_max) {
+                /* refill the claimed set */
+                alloc_cur =(pal_uint64_t)_InterlockedExchange64((volatile LONGLONG*) &thread_pool->AllocCount, (LONGLONG) thread_pool->FreeCount);
+                alloc_max = thread_pool->AllocCount;
+                if (alloc_cur == alloc_max) {
+                    /* if we can commit additional tasks, prefer that */
+                    if (thread_pool->CommitCount < PAL_TASK_CHUNK_COUNT) {
+                        /* TODO: commit an additional chunk of tasks */
+                        YieldProcessor();
+                    } else {
+                        /* no choice but to wait for some work to finish and try again */
+                        YieldProcessor();
+                    }
+                }
+            }
+            while (alloc_cur != alloc_max) {
+                /* allocate from the claimed set */
+                freelist_v = slot_list[(alloc_cur++) & 0xFFFF];
+                slot_index = PAL_TaskSlotGetSlotIndex(freelist_v);
+                generation = PAL_TaskSlotGetSlotGeneration(freelist_v);
+                task_id_list[write_index++] = PAL_TaskIdPack(pool_index, slot_index, generation);
+                if (write_index == task_count) {
+                    thread_pool->AllocNext = alloc_cur;
+                    return 0;
+                }
+            }
+        }
+    } else {
+        /* attempt to allocate too many task IDs */
+        return -1;
+    }
+}
+
+PAL_API(void)
+PAL_TaskDelete
+(
+    struct PAL_TASK_POOL *thread_pool, 
+    PAL_TASKID                task_id
+)
+{
+    PAL_TASK_DATA  *task_data = NULL;
+    PAL_TASK_POOL  *task_pool = NULL;
+    PAL_TASK_POOL **pool_list = thread_pool->TaskPoolList;
+    pal_uint32_t   pool_index = PAL_TaskIdGetTaskPoolIndex(task_id);
+    pal_uint32_t   slot_index = PAL_TaskIdGetTaskSlotIndex(task_id);
+    pal_uint32_t   generation = PAL_TaskIdGetGeneration(task_id);
+    pal_uint32_t     next_gen =(generation + 1) & PAL_TASKID_GENER_MASK;
+
+    if (PAL_TaskIdGetValid(task_id)) {
+        task_pool = pool_list[pool_index];
+        task_data =&task_pool->TaskSlotData[slot_index];
+        if (generation == task_data->Generation) {
+            /* increment the generation to detect expired tasks */
+            task_data->Generation = next_gen;
+            /* return the slot index to the free pool */
+            PAL_TaskPoolMakeTaskSlotFree(task_pool, slot_index, next_gen);
+        }
+    }
+}
+
+PAL_API(struct PAL_TASK*)
+PAL_TaskGetData
+(
+    struct PAL_TASK_POOL *thread_pool, 
+    PAL_TASKID                task_id, 
+    void              **argument_data, 
+    pal_usize_t   *argument_data_size
+)
+{
+    PAL_TASK_DATA  *task_data = NULL;
+    PAL_TASK_POOL  *task_pool = NULL;
+    PAL_TASK_POOL **pool_list = thread_pool->TaskPoolList;
+    pal_uint32_t   pool_index = PAL_TaskIdGetTaskPoolIndex(task_id);
+    pal_uint32_t   slot_index = PAL_TaskIdGetTaskSlotIndex(task_id);
+    pal_uint32_t   generation = PAL_TaskIdGetGeneration(task_id);
+
+    if (PAL_TaskIdGetValid(task_id)) {
+        task_pool = pool_list[pool_index];
+        task_data =&task_pool->TaskSlotData[slot_index];
+        if (generation == task_data->Generation) {
+            PAL_Assign(argument_data     , task_data->Arguments);
+            PAL_Assign(argument_data_size, sizeof(task_data->Arguments));
+            return &task_data->PublicData;
+        }
+    }
+    /* the task identifier is invalid */
+    PAL_Assign(argument_data, NULL);
+    PAL_Assign(argument_data_size, 0);
+    return NULL;
 }
 
