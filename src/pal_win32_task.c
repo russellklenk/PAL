@@ -5,8 +5,6 @@
 #include "pal_win32_thread.h"
 #include "pal_win32_memory.h"
 
-#include <process.h>
-
 /* @summary Define the value sent to the completion port and received in the lpCompletionKey parameter of GetQueuedCompletionStatus when the thread should terminate.
  */
 #ifndef PAL_COMPLETION_KEY_SHUTDOWN
@@ -122,6 +120,13 @@ typedef enum PAL_TASK_SCHEDULER_PARK_RESULT {
     PAL_TASK_SCHEDULER_PARK_RESULT_WAKE_TASK  =  2, /* The thread was woken up and should check the task pool's WakeupTaskId field for a task to execute. */
 } PAL_TASK_SCHEDULER_PARK_RESULT;
 
+/* @summary Define the result values that can be returned from PAL_TaskSchedulerWakeWorker.
+ */
+typedef enum PAL_TASK_SCHEDULER_WAKE_RESULT {
+    PAL_TASK_SCHEDULER_WAKE_RESULT_QUEUED     =  0, /* The scheduler queued the ready-to-run task for later processing. */
+    PAL_TASK_SCHEDULER_WAKE_RESULT_WAKEUP     =  1, /* The scheduler woke a waiting thread to process the task. */
+} PAL_TASK_SCHEDULER_WAKE_RESULT;
+
 /* @summary Implement a default thread initialization function.
  * @param task_scheduler The task scheduler that owns the worker thread.
  * @param thread_task_pool The PAL_TASK_POOL allocated to the worker thread.
@@ -144,97 +149,6 @@ PAL_DefaultTaskWorkerInit
     PAL_Assign(thread_context, NULL);
     return 0;
 }
-
-#if 0
-static int
-PAL_TaskSchedulerWakeWorker /* to be called when a worker makes a task ready-to-run via publish or complete */
-(
-    struct PAL_TASK_SCHEDULER *scheduler, 
-    struct PAL_TASK_POOL    *worker_pool, 
-    PAL_TASKID                 give_task
-)
-{
-    pal_uint32_t tos = scheduler->ParkedThreadTOS;
-    pal_uint32_t idx;
-    _ReadWriteBarrier();
-    for ( ; ; ) {
-        if (tos == 0) {
-            /* should add to RTR queue and inc estimated count for pool idx and event count */
-            scheduler->TaskPoolERTR[worker_pool->PoolIndex]++;
-            PAL_TaskPoolPublishReadyTask(worker_pool, give_task);
-            return NO_WORKERS_WAITING;
-        }
-        idx = scheduler->ParkedThreadIds[tos-1];
-        if ((value = CAS(&scheduler->ParkedThreadTOS, tos-1, tos)) == tos) {
-            /* successfully popped a worker, assign to mail slot */
-            PAL_THREAD_POOL *woke_pool = scheduler->TaskPoolList[idx];
-            woke_pool->WakeTaskId = give_task;
-            PAL_SemaphorePostOne(&woke_pool->ParkSem);
-            return WORKER_WOKEN;
-        } else {
-            /* CAS failed; try again */
-            tos = value;
-        }
-    }
-    /* waiting threads are maintained on a LIFO.
-     * if any threads are waiting, pop one and assign it give_task.
-     * then sem_post to wake it, and return a value indicating the task was assigned.
-     * if no threads are waiting, return a value indicating the task was not assigned; 
-     * the caller should add the task to its RTR queue (or just do that here?) */
-}
-
-static int
-PAL_TaskSchedulerParkWorker /* to be called when a worker runs out of work in its local RTR deque */
-(
-    struct PAL_TASK_SCHEDULER *scheduler, 
-    struct PAL_TASK_POOL    *worker_pool, 
-    pal_uint32_t             *steal_list, 
-    pal_uint32_t          max_steal_list, 
-    pal_uint32_t         *num_steal_list
-)
-{
-    pal_uint32_t event_count = scheduler->ReadyEventCount;
-    pal_uint32_t     n_steal = 0;
-    _ReadWriteBarrier();
-    if (max_steal_list > 0) {
-        do {
-            for (i = 0, n = scheduler->TaskPoolCount; i < n; ++i) {
-                if (scheduler->TaskPoolERTR[i] > THRESHOLD) {
-                    steal_list[n_steal++] = i;
-                    if (n_steal == max_steal_list)
-                        break;
-                }
-            }
-            if (n_steal == 0) {
-                if ((value = CAS(&scheduler->ReadyEventCount, event_count, event_count)) == event_count) {
-                    goto park_thread;
-                }
-            }
-        } while (n_steal == 0);
-    }
-    if (n_steal > 0) {
-        return WORKER_STEAL;
-    }
-
-park_thread:
-    PAL_SemaphoreWait(&worker_pool->ParkSem);
-    if (scheduler->ShutdownSignal) {
-        /* woken due to shutdown */
-        return WORKER_SHUTDOWN;
-    } else {
-        /* woken due to work item */
-        return CHECK_MAILSLOT;
-    }
-    /* snapshot the publish event count.
-     * run through the set of estimated RTR queue counts.
-     * any queue with RTR count > threshold should get added to steal_list.
-     * if no targets meet the threshold, attempt to CAS the event count with itself.
-     * if the CAS succeeds, no events have been published and the worker should park.
-     * if the CAS fails, at least one event has been published, so run through again.
-     * if the steal_list has at least one target in it, return a code to the caller 
-     * to indicate that it should attempt to steal from the listed pools. */
-}
-#endif
 
 /* @summary Return a task slot to the free list for the owning task pool.
  * @param thread_pool The PAL_TASK_POOL from which the task slot was allocated.
@@ -430,6 +344,51 @@ park_thread:
     }
 }
 
+/* @summary Potentially wake up a waiting thread to process a ready-to-run task.
+ * If no workers are waiting, the task is queued for later processing.
+ * This function should be called when a thread makes a task ready-to-run via a publish or complete operation.
+ * @param scheduler The PAL_TASK_SCHEDULER managing the scheduler state.
+ * @param worker_pool The PAL_TASK_POOL owned by the calling thread, which executed the publish or complete operation.
+ * @param give_task The identifier of the task that is ready-to-run.
+ * @return One of the values of the PAL_TASK_SCHEDULER_WAKE_RESULT enumeration.
+ */
+static pal_sint32_t
+PAL_TaskSchedulerWakeWorker /* to be called when a worker makes a task ready-to-run via publish or complete */
+(
+    struct PAL_TASK_SCHEDULER *scheduler, 
+    struct PAL_TASK_POOL    *worker_pool, 
+    PAL_TASKID                 give_task
+)
+{
+    pal_uint32_t *stack = scheduler->ParkedPoolIds;
+    pal_sint32_t    tos = scheduler->ParkedPoolToS;
+    pal_uint32_t    idx;
+    pal_sint32_t  value;
+
+    _ReadWriteBarrier();
+    
+    for ( ; ; ) {
+        if (tos == 0) {
+            /* no workers are waiting; push the task onto the local ready-to-run queue */
+            PAL_TaskPoolPushReadyTask(worker_pool, give_task);
+            scheduler->TaskPoolERTR[worker_pool->PoolIndex]++;
+            _InterlockedIncrement64((volatile LONGLONG*)&scheduler->ReadyEventCount);
+            return PAL_TASK_SCHEDULER_WAKE_RESULT_QUEUED;
+        }
+        idx = stack[tos-1];
+        if ((value =(pal_sint32_t)_InterlockedCompareExchange((volatile LONG*)&scheduler->ParkedPoolToS, tos-1, tos)) == tos) {
+            /* successfully popped a worker, assign to mail slot */
+            PAL_TASK_POOL *woken  = scheduler->TaskPoolList[idx];
+            woken->WakeupTaskId   = give_task;
+            ReleaseSemaphore(woken->ParkSemaphore, 1, NULL);
+            return PAL_TASK_SCHEDULER_WAKE_RESULT_WAKEUP;
+        } else {
+            /* try again */
+            tos = value;
+        }
+    }
+}
+
 /* @summary Attempt to steal work from another thread's ready-to-run queue.
  * @param scheduler The PAL_TASK_SCHEDULER managing the set of PAL_TASK_POOL instances.
  * @param worker_pool The PAL_TASK_POOL bound to the thread that is attempting to steal work.
@@ -443,7 +402,6 @@ static PAL_TASKID
 PAL_TaskSchedulerStealWork
 (
     struct PAL_TASK_SCHEDULER *scheduler, 
-    struct PAL_TASK_POOL    *worker_pool, 
     pal_uint32_t const       *steal_list, 
     pal_uint32_t const    num_steal_list, 
     pal_uint32_t             start_index, 
@@ -462,11 +420,14 @@ PAL_TaskSchedulerStealWork
     /* attempt to steal work from one of the candidate victims */
     for (i = start_index, n = num_steal_list; i < n; ++i) {
         victim_pool = pool_list[steal_list[i]];
-        stolen_task = PAL_TASKID_NONE;
-        /* if successful, InterlockedDecrement TaskPoolERTR[steal_list[i]] */
+        stolen_task = PAL_TaskPoolStealReadyTask(victim_pool);
+        if (stolen_task != PAL_TASKID_NONE) {
+            /* the steal was successful */
+            _InterlockedDecrement((volatile LONG*)&scheduler->TaskPoolERTR[steal_list[i]]);
+            return stolen_task;
+        }
     }
     /* processed the entire steal_list with no success */
-    PAL_UNUSED_ARG(worker_pool);
     PAL_Assign(next_start, 0);
     return PAL_TASKID_NONE;
 }
@@ -484,7 +445,9 @@ PAL_CpuWorkerThreadMain
 {
     PAL_CPU_WORKER_THREAD_INIT *init =(PAL_CPU_WORKER_THREAD_INIT*) argp;
     PAL_TASK_SCHEDULER    *scheduler = init->TaskScheduler;
+    PAL_TASK_POOL        **pool_list = scheduler->TaskPoolList;
     PAL_TASK_POOL       *thread_pool = NULL;
+    PAL_TASK_DATA         *task_data = NULL;
     void                 *thread_ctx = NULL;
     unsigned int           exit_code = 0;
     PAL_TASKID          current_task = PAL_TASKID_NONE;
@@ -493,7 +456,11 @@ PAL_CpuWorkerThreadMain
     pal_sint32_t         wake_reason = PAL_TASK_SCHEDULER_PARK_RESULT_WAKE_TASK;
     pal_uint32_t         steal_count = 0;
     pal_uint32_t         steal_index = 0;
-    pal_uint32_t         steal_list[4];
+    PAL_TASK_ARGS          task_args;
+    pal_uint32_t          pool_index;
+    pal_uint32_t          slot_index;
+    pal_uint32_t          generation;
+    pal_uint32_t       steal_list[4];
 
     /* set the thread name for diagnostics tools */
     PAL_SetCurrentThreadName("CPU Worker");
@@ -513,6 +480,14 @@ PAL_CpuWorkerThreadMain
         return 2;
     }
 
+    /* set constant fields of PAL_TASK_ARGS */
+    task_args.TaskScheduler = scheduler;
+    task_args.ExecutionPool = thread_pool;
+    task_args.ThreadContext = thread_ctx;
+    task_args.ThreadId      = thread_pool->OsThreadId;
+    task_args.ThreadIndex   = thread_pool->PoolIndex;
+    task_args.ThreadCount   = scheduler->TaskPoolCount;
+
     /* thread initialization has completed */
     SetEvent(init->ReadySignal); init = NULL;
 
@@ -524,17 +499,33 @@ PAL_CpuWorkerThreadMain
                     { current_task = PAL_TASKID_NONE;
                     } break;
                 case PAL_TASK_SCHEDULER_PARK_RESULT_TRY_STEAL:
-                    { current_task = PAL_TaskSchedulerStealWork(scheduler, thread_pool, steal_list, steal_count, steal_index, &steal_index);
+                    { current_task = PAL_TaskSchedulerStealWork(scheduler, steal_list, steal_count, steal_index, &steal_index);
                     } break;
                 case PAL_TASK_SCHEDULER_PARK_RESULT_WAKE_TASK:
-                    { current_task = (PAL_TASKID)_InterlockedExchange((volatile LONG*) &thread_pool->WakeupTaskId, PAL_TASKID_NONE);
+                    { current_task = thread_pool->WakeupTaskId;
                     } break;
                 default:
                     { current_task = PAL_TASKID_NONE;
                     } break;
             }
-            if (current_task != PAL_TASKID_NONE) {
-                /* execute the current task */
+            while (current_task != PAL_TASKID_NONE) {
+                /* set up and execute the task */
+                pool_index = PAL_TaskIdGetTaskPoolIndex(current_task);
+                slot_index = PAL_TaskIdGetTaskSlotIndex(current_task);
+                generation = PAL_TaskIdGetGeneration(current_task);
+                task_data  =&pool_list[pool_index]->TaskSlotData[slot_index];
+                task_args.TaskArguments = task_data->Arguments;
+                task_args.TaskId = current_task;
+                task_data->PublicData.TaskMain(&task_args);
+                if (task_data->PublicData.CompletionType == PAL_TASK_COMPLETION_TYPE_AUTOMATIC) {
+                    /* TODO: PAL_TaskComplete */
+                }
+
+                /* executing the task may have produced one or more additional 
+                 * work items in the ready-to-run deque for this thread. 
+                 * keep executing tasks until the queue drains.
+                 */
+                current_task = PAL_TaskPoolTakeReadyTask(thread_pool);
             }
         }
     } 
@@ -1264,3 +1255,93 @@ PAL_TaskGetData
     return NULL;
 }
 
+#if 0
+static int
+PAL_TaskSchedulerWakeWorker /* to be called when a worker makes a task ready-to-run via publish or complete */
+(
+    struct PAL_TASK_SCHEDULER *scheduler, 
+    struct PAL_TASK_POOL    *worker_pool, 
+    PAL_TASKID                 give_task
+)
+{
+    pal_uint32_t tos = scheduler->ParkedThreadTOS;
+    pal_uint32_t idx;
+    _ReadWriteBarrier();
+    for ( ; ; ) {
+        if (tos == 0) {
+            /* should add to RTR queue and inc estimated count for pool idx and event count */
+            scheduler->TaskPoolERTR[worker_pool->PoolIndex]++;
+            PAL_TaskPoolPublishReadyTask(worker_pool, give_task);
+            return NO_WORKERS_WAITING;
+        }
+        idx = scheduler->ParkedThreadIds[tos-1];
+        if ((value = CAS(&scheduler->ParkedThreadTOS, tos-1, tos)) == tos) {
+            /* successfully popped a worker, assign to mail slot */
+            PAL_THREAD_POOL *woke_pool = scheduler->TaskPoolList[idx];
+            woke_pool->WakeTaskId = give_task;
+            PAL_SemaphorePostOne(&woke_pool->ParkSem);
+            return WORKER_WOKEN;
+        } else {
+            /* CAS failed; try again */
+            tos = value;
+        }
+    }
+    /* waiting threads are maintained on a LIFO.
+     * if any threads are waiting, pop one and assign it give_task.
+     * then sem_post to wake it, and return a value indicating the task was assigned.
+     * if no threads are waiting, return a value indicating the task was not assigned; 
+     * the caller should add the task to its RTR queue (or just do that here?) */
+}
+
+static int
+PAL_TaskSchedulerParkWorker /* to be called when a worker runs out of work in its local RTR deque */
+(
+    struct PAL_TASK_SCHEDULER *scheduler, 
+    struct PAL_TASK_POOL    *worker_pool, 
+    pal_uint32_t             *steal_list, 
+    pal_uint32_t          max_steal_list, 
+    pal_uint32_t         *num_steal_list
+)
+{
+    pal_uint32_t event_count = scheduler->ReadyEventCount;
+    pal_uint32_t     n_steal = 0;
+    _ReadWriteBarrier();
+    if (max_steal_list > 0) {
+        do {
+            for (i = 0, n = scheduler->TaskPoolCount; i < n; ++i) {
+                if (scheduler->TaskPoolERTR[i] > THRESHOLD) {
+                    steal_list[n_steal++] = i;
+                    if (n_steal == max_steal_list)
+                        break;
+                }
+            }
+            if (n_steal == 0) {
+                if ((value = CAS(&scheduler->ReadyEventCount, event_count, event_count)) == event_count) {
+                    goto park_thread;
+                }
+            }
+        } while (n_steal == 0);
+    }
+    if (n_steal > 0) {
+        return WORKER_STEAL;
+    }
+
+park_thread:
+    PAL_SemaphoreWait(&worker_pool->ParkSem);
+    if (scheduler->ShutdownSignal) {
+        /* woken due to shutdown */
+        return WORKER_SHUTDOWN;
+    } else {
+        /* woken due to work item */
+        return CHECK_MAILSLOT;
+    }
+    /* snapshot the publish event count.
+     * run through the set of estimated RTR queue counts.
+     * any queue with RTR count > threshold should get added to steal_list.
+     * if no targets meet the threshold, attempt to CAS the event count with itself.
+     * if the CAS succeeds, no events have been published and the worker should park.
+     * if the CAS fails, at least one event has been published, so run through again.
+     * if the steal_list has at least one target in it, return a code to the caller 
+     * to indicate that it should attempt to steal from the listed pools. */
+}
+#endif
