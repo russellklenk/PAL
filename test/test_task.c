@@ -2,12 +2,18 @@
  * @summary Implement test routines for the functionality provided by 
  * pal_task.h.
  */
+#include <stddef.h>
+#include <stdint.h>
+#include <process.h>
+#include <stdio.h>
+
 #include "pal_memory.h"
 #include "pal_thread.h"
 #include "pal_task.h"
 
-#include <process.h>
-#include <stdio.h>
+#include "pal_win32_memory.c"
+#include "pal_win32_thread.c"
+#include "pal_win32_task.c"
 
 /* @summary Specify a size in kilobytes.
  * @param _kb The size in kilobytes.

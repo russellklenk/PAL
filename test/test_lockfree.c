@@ -1,11 +1,14 @@
 /**
  * @summary Implement test routines for the concurrent queues in pal_thread.h.
  */
+#include <process.h>
+#include <stdio.h>
+
 #include "pal_memory.h"
 #include "pal_thread.h"
 
-#include <process.h>
-#include <stdio.h>
+#include "pal_win32_memory.c"
+#include "pal_win32_thread.c"
 
 /* @summary Specify a size in kilobytes.
  * @param _kb The size in kilobytes.
@@ -253,25 +256,6 @@ TST_SPMCQueueSteal_u32
     return 0;
 }
 #endif
-
-/* @summary Calculate the next power-of-two value greater than or equal to a given value.
- * @param n The input value.
- * @return The next power-of-two value greater than or equal to n.
- */
-static pal_usize_t
-PAL_NextPow2GreaterOrEqual
-(
-    pal_usize_t n
-)
-{
-    pal_usize_t i, k;
-    --n;
-    for (i = 1, k = sizeof(pal_usize_t) * 8; i < k; i <<= 1)
-    {
-        n |= n >> i;
-    }
-    return n+1;
-}
 
 static unsigned int __stdcall
 ThreadMain_Skeleton

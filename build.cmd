@@ -62,7 +62,7 @@ SET BUILD_FAILED=
 :: Build all of the test drivers.
 PUSHD "%OUTPUTDIR%"
 FOR %%x IN ("%TESTSDIR%"\*.c) DO (
-    cl.exe %CPPFLAGS% %PAL_SOURCES% "%%x" %DEFINES% %LNKFLAGS% /FAs /Fe%%~nx.exe /link 
+    cl.exe %CPPFLAGS% "%%x" %DEFINES% %LNKFLAGS% /FAs /Fe%%~nx.exe /link 
     IF %ERRORLEVEL% NEQ 0 (
         ECHO ERROR: Build failed for %%~nx.exe.
         SET BUILD_FAILED=1
