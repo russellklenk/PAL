@@ -11,6 +11,7 @@
 
 #ifndef PAL_NO_INCLUDES
 #include <Windows.h>
+#include <process.h>
 #endif
 
 /* @summary Define the data describing the CPU layout of the host system.
