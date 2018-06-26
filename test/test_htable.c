@@ -9,6 +9,9 @@
 #include "pal_time.h"
 #include "pal_memory.h"
 
+#include "pal_win32_time.c"
+#include "pal_win32_memory.c"
+
 #define STREAM_TYPE1 0
 #define STREAM_TYPE2 1
 #define TABLE_TYPE   3
@@ -21,63 +24,6 @@ typedef struct DATA_TYPE2 {
     char const  *Name;
     char         Blob[200];
 } DATA_TYPE2;
-
-/* @summary Retrieve the base memory address of the data for a chunk.
- * The caller must verify that the chunk stores data internally.
- * @param table The PAL_HANDLE_TABLE to query.
- * @param chunk_index The zero-based index of the chunk to query.
- * @return A pointer to the start of the chunk data block (which is also the base address of the chunk). 
- * The caller should have previously ensured that the chunk is committed prior to dereferencing any address within the address range.
- */
-static PAL_INLINE pal_uint8_t*
-PAL_HandleTableGetChunkData
-(
-    struct PAL_HANDLE_TABLE *table,
-    pal_uint32_t       chunk_index
-)
-{
-    return table->BaseAddress + (table->ChunkSize * chunk_index);
-}
-
-/* @summary Retrieve a pointer to the start of the sparse state array for a given chunk.
- * @param table The PAL_HANDLE_TABLE to query.
- * @param chunk_index The zero-based index of the chunk to query.
- * @return A pointer to the start of the sparse data array used to map handle values to dense indices.
- */
-static PAL_INLINE pal_uint32_t*
-PAL_HandleTableGetChunkState
-(
-    struct PAL_HANDLE_TABLE *table, 
-    pal_uint32_t       chunk_index
-)
-{   /* chunk memory layout is [data][pad][state][dense].
-     * the state and dense arrays are each PAL_HANDLE_CHUNK_CAPACITY 32-bit unsigned integers.
-     * so we compute the address of the start of the next chunk, the subtract to get to the metadata. */
-    pal_usize_t  chunk_size = table->ChunkSize;
-    pal_usize_t  array_size = PAL_HANDLE_CHUNK_CAPACITY * sizeof(pal_uint32_t);
-    pal_uint8_t *next_chunk =(chunk_size * chunk_index) + table->BaseAddress + chunk_size;
-    return    (pal_uint32_t*)(next_chunk -(array_size   * 2));
-}
-
-/* @summary Retrieve a pointer to the start of the dense handle array for a given chunk.
- * @param table The PAL_HANDLE_TABLE to query.
- * @param chunk_index The zero-based index of the chunk to query.
- * @return A pointer to the start of the dense handle array specifying the live handles in the chunk.
- */
-static PAL_INLINE pal_uint32_t*
-PAL_HandleTableGetChunkDense
-(
-    struct PAL_HANDLE_TABLE *table, 
-    pal_uint32_t       chunk_index
-)
-{   /* chunk memory layout is [data][pad][state][dense].
-     * the state and dense arrays are each PAL_HANDLE_CHUNK_CAPACITY 32-bit unsigned integers.
-     * so we compute the address of the start of the next chunk, the subtract to get to the metadata. */
-    pal_usize_t  chunk_size = table->ChunkSize;
-    pal_usize_t  array_size = PAL_HANDLE_CHUNK_CAPACITY * sizeof(pal_uint32_t);
-    pal_uint8_t *next_chunk =(chunk_size * chunk_index) + table->BaseAddress + chunk_size;
-    return    (pal_uint32_t*)(next_chunk - array_size);
-}
 
 static void
 PrintCOMMIT
