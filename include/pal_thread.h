@@ -53,19 +53,37 @@ extern "C" {
  * @return The operating system identifier of the calling thread.
  */
 PAL_API(pal_uint32_t)
-PAL_GetCurrentThreadId
+PAL_ThreadGetId
 (
     void
 );
 
 /* @summary Assign a string identifier to the calling thread.
- * This function is useful for debugging only and may not have any effect on some platforms.
+ * This function is useful for diagnostics only and may not have any effect on some platforms.
  * @param name A nul-terminated string literal specifying the thread name.
  */
 PAL_API(void)
-PAL_SetCurrentThreadName
+PAL_ThreadSetName
 (
     char const *name
+);
+
+/* @summary Put the calling thread to sleep for some length of time.
+ * @param duration_ns The minimum amount of time the thread should sleep, in nanoseconds.
+ */
+PAL_API(void)
+PAL_ThreadSleep
+(
+    pal_uint64_t duration_ns
+);
+
+/* @summary Cause the calling thread to yield to a ready-to-run thread determined by the operating system.
+ * This operation may have no effect on some processors, or if there is no ready-to-run thread.
+ */
+PAL_API(void)
+PAL_ThreadYield
+(
+    void
 );
 
 /* @summary Query the basic attributes of the host CPU(s).

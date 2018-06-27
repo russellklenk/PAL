@@ -133,7 +133,7 @@ PAL_SemaphoreWaitNoSpin
 }
 
 PAL_API(pal_uint32_t)
-PAL_GetCurrentThreadId
+PAL_ThreadGetId
 (
     void
 )
@@ -142,7 +142,7 @@ PAL_GetCurrentThreadId
 }
 
 PAL_API(void)
-PAL_SetCurrentThreadName
+PAL_ThreadSetName
 (
     char const *name
 )
@@ -172,6 +172,25 @@ PAL_SetCurrentThreadName
         SetThreadDescription_Func(GetCurrentThread(), wide_name);
     }
     /* for linux: pthread_setname_np https://stackoverflow.com/questions/2369738/can-i-set-the-name-of-a-thread-in-pthreads-linux */
+}
+
+PAL_API(void)
+PAL_ThreadSleep
+(
+    pal_uint64_t duration_ns
+)
+{
+    pal_uint32_t whole_ms = (pal_uint32_t)(duration_ns / 1000000ULL);
+    Sleep(whole_ms);
+}
+
+PAL_API(void)
+PAL_ThreadYield
+(
+    void
+)
+{
+    YieldProcessor();
 }
 
 PAL_API(int)
