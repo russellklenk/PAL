@@ -278,7 +278,7 @@ ThreadMain_Skeleton
 
     /* TODO: the thread should perform any initialization here.
      * call SetEvent(error) if anything fails during initialization.
-     * call PAL_SetCurrentThreadName to give a name for the debugger.
+     * call PAL_ThreadSetName to give a name for the debugger.
      */
 
     /* indicate that the thread has initialized and is ready-to-run.
@@ -330,9 +330,9 @@ ThreadMain_SPSCQueuePusher
 
     /* the thread should perform any initialization here.
      * call SetEvent(error) if anything fails during initialization.
-     * call PAL_SetCurrentThreadName to give a name for the debugger.
+     * call PAL_ThreadSetName to give a name for the debugger.
      */
-    PAL_SetCurrentThreadName("SPSCQueuePusher");
+    PAL_ThreadSetName("SPSCQueuePusher");
     PAL_ZeroMemory(counts, context->OpsPerIteration * sizeof(pal_uint32_t));
 
     /* indicate that the thread has initialized and is ready-to-run.
@@ -391,9 +391,9 @@ ThreadMain_SPSCQueueTaker
 
     /* the thread should perform any initialization here.
      * call SetEvent(error) if anything fails during initialization.
-     * call PAL_SetCurrentThreadName to give a name for the debugger.
+     * call PAL_ThreadSetName to give a name for the debugger.
      */
-    PAL_SetCurrentThreadName("SPSCQueueTaker");
+    PAL_ThreadSetName("SPSCQueueTaker");
     PAL_ZeroMemory(counts, context->OpsPerIteration * sizeof(pal_uint32_t));
 
     /* indicate that the thread has initialized and is ready-to-run.
@@ -454,9 +454,9 @@ ThreadMain_SPMCQueuePusher
 
     /* the thread should perform any initialization here.
      * call SetEvent(error) if anything fails during initialization.
-     * call PAL_SetCurrentThreadName to give a name for the debugger.
+     * call PAL_ThreadSetName to give a name for the debugger.
      */
-    PAL_SetCurrentThreadName("SPMCQueuePusher");
+    PAL_ThreadSetName("SPMCQueuePusher");
     PAL_ZeroMemory(counts, context->OpsPerIteration * sizeof(pal_uint32_t));
 
     /* indicate that the thread has initialized and is ready-to-run.
@@ -521,9 +521,9 @@ ThreadMain_SPMCQueuePushTaker
 
     /* the thread should perform any initialization here.
      * call SetEvent(error) if anything fails during initialization.
-     * call PAL_SetCurrentThreadName to give a name for the debugger.
+     * call PAL_ThreadSetName to give a name for the debugger.
      */
-    PAL_SetCurrentThreadName("SPMCQueuePushTaker");
+    PAL_ThreadSetName("SPMCQueuePushTaker");
     PAL_ZeroMemory(counts, context->OpsPerIteration * sizeof(pal_uint32_t));
 
     /* indicate that the thread has initialized and is ready-to-run.
@@ -593,9 +593,9 @@ ThreadMain_SPMCQueueStealer
 
     /* the thread should perform any initialization here.
      * call SetEvent(error) if anything fails during initialization.
-     * call PAL_SetCurrentThreadName to give a name for the debugger.
+     * call PAL_ThreadSetName to give a name for the debugger.
      */
-    PAL_SetCurrentThreadName("SPMCQueueStealer");
+    PAL_ThreadSetName("SPMCQueueStealer");
     PAL_ZeroMemory(counts, context->OpsPerIteration * sizeof(pal_uint32_t));
 
     /* indicate that the thread has initialized and is ready-to-run.
@@ -656,9 +656,9 @@ ThreadMain_MPMCQueuePusher
 
     /* the thread should perform any initialization here.
      * call SetEvent(error) if anything fails during initialization.
-     * call PAL_SetCurrentThreadName to give a name for the debugger.
+     * call PAL_ThreadSetName to give a name for the debugger.
      */
-    PAL_SetCurrentThreadName("MPMCQueuePusher");
+    PAL_ThreadSetName("MPMCQueuePusher");
     PAL_ZeroMemory(counts, context->OpsPerIteration * sizeof(pal_uint32_t));
 
     /* indicate that the thread has initialized and is ready-to-run.
@@ -717,9 +717,9 @@ ThreadMain_MPMCQueueTaker
 
     /* the thread should perform any initialization here.
      * call SetEvent(error) if anything fails during initialization.
-     * call PAL_SetCurrentThreadName to give a name for the debugger.
+     * call PAL_ThreadSetName to give a name for the debugger.
      */
-    PAL_SetCurrentThreadName("MPMCQueueTaker");
+    PAL_ThreadSetName("MPMCQueueTaker");
     PAL_ZeroMemory(counts, context->OpsPerIteration * sizeof(pal_uint32_t));
 
     /* indicate that the thread has initialized and is ready-to-run.
