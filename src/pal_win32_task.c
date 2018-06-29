@@ -137,9 +137,9 @@ typedef enum PAL_TASK_SCHEDULER_WAKE_RESULT {
 static int
 PAL_DefaultTaskWorkerInit
 (
-    struct PAL_TASK_SCHEDULER *task_scheduler, 
-    struct PAL_TASK_POOL    *thread_task_pool, 
-    void                        *init_context, 
+    struct PAL_TASK_SCHEDULER *task_scheduler,
+    struct PAL_TASK_POOL    *thread_task_pool,
+    void                        *init_context,
     void                     **thread_context
 )
 {
@@ -158,8 +158,8 @@ PAL_DefaultTaskWorkerInit
 static void
 PAL_TaskPoolMakeTaskSlotFree /* this only does the return - not the generation update */
 (
-    struct PAL_TASK_POOL *thread_pool, 
-    pal_uint32_t           slot_index, 
+    struct PAL_TASK_POOL *thread_pool,
+    pal_uint32_t           slot_index,
     pal_uint32_t           generation
 )
 {
@@ -167,7 +167,7 @@ PAL_TaskPoolMakeTaskSlotFree /* this only does the return - not the generation u
     pal_uint32_t *free_slots = thread_pool->AllocSlotIds;
     pal_uint64_t   write_pos = thread_pool->FreeCount;
     pal_uint64_t       value;
-    
+
     _ReadWriteBarrier(); /* load-acquire */
 
     for ( ; ; ) {
@@ -191,7 +191,7 @@ PAL_TaskPoolMakeTaskSlotFree /* this only does the return - not the generation u
 static void
 PAL_TaskPoolPushReadyTask
 (
-    struct PAL_TASK_POOL *worker_pool, 
+    struct PAL_TASK_POOL *worker_pool,
     PAL_TASKID                task_id
 )
 {
@@ -276,6 +276,51 @@ PAL_TaskPoolStealReadyTask
     return PAL_TASKID_NONE;
 }
 
+static void
+PAL_TaskPoolCompleteTask
+(
+    struct PAL_TASK_SCHEDULER  *scheduler,
+    struct PAL_TASK_POOL *completion_pool,
+    struct PAL_TASK_POOL      *owner_pool,
+    struct PAL_TASK_DATA       *task_data,
+    pal_uint32_t               pool_index,
+    pal_uint32_t               slot_index,
+    pal_uint32_t               generation
+)
+{
+    PAL_UNUSED_ARG(scheduler);
+    PAL_UNUSED_ARG(completion_pool);
+    PAL_UNUSED_ARG(owner_pool);
+    PAL_UNUSED_ARG(task_data);
+    PAL_UNUSED_ARG(pool_index);
+    PAL_UNUSED_ARG(slot_index);
+    PAL_UNUSED_ARG(generation);
+#if 0
+    PAL_TASK_POOL **pool_list = scheduler->TaskPoolList;
+    PAL_TASKID   *permit_list = task_data->PermitTasks;
+    pal_uint32_t  ready_count = 0;
+    pal_sint32_t   work_count;
+    pal_sint32_t permit_count;
+    PAL_TASKID ready_list[15];  /* limited by the size of the permit list */
+    pal_sint32_t            i;
+
+    if ((work_count = _InterlockedExchangeAdd((volatile LONG*)&task_data->WorkCount, -1)) == 1) {
+        /* the task and all of its child tasks have completed */
+        for (i = 0, permit_count = _InterlockedExchange((volatile LONG*)&task_data->PermitCount, -1); i < permit_count; ++i) {
+        }
+        if (ready_count > 0) {
+            /* flush tasks that are now ready-to-run.
+             * wake worker or add to queue for completion_pool. */
+        }
+        if (task_data->PublicData.ParentId != PAL_TASKID_NONE) {
+            /* TODO: bubble completion up to the parent task */
+        }
+        /* TODO: should mark slot free? or require explicit delete? */
+        PAL_TaskPoolMakeTaskSlotFree(owner_pool, slot_index, (generation+1) & PAL_TASKID_GENER_MASK);
+    }
+#endif
+}
+
 /* @summary Attempt to park (put to sleep) a worker thread.
  * Worker threads are only put into a wait state when there's no work available.
  * This function should be called when a worker runs out of work in its local ready-to-run queue.
@@ -289,10 +334,10 @@ PAL_TaskPoolStealReadyTask
 static pal_sint32_t
 PAL_TaskSchedulerParkWorker
 (
-    struct PAL_TASK_SCHEDULER *scheduler, 
-    struct PAL_TASK_POOL    *worker_pool, 
-    pal_uint32_t             *steal_list, 
-    pal_uint32_t          max_steal_list, 
+    struct PAL_TASK_SCHEDULER *scheduler,
+    struct PAL_TASK_POOL    *worker_pool,
+    pal_uint32_t             *steal_list,
+    pal_uint32_t          max_steal_list,
     pal_uint32_t         *num_steal_list
 )
 {
@@ -355,8 +400,8 @@ park_thread:
 static pal_sint32_t
 PAL_TaskSchedulerWakeWorker /* to be called when a worker makes a task ready-to-run via publish or complete */
 (
-    struct PAL_TASK_SCHEDULER *scheduler, 
-    struct PAL_TASK_POOL    *worker_pool, 
+    struct PAL_TASK_SCHEDULER *scheduler,
+    struct PAL_TASK_POOL    *worker_pool,
     PAL_TASKID                 give_task
 )
 {
@@ -366,7 +411,7 @@ PAL_TaskSchedulerWakeWorker /* to be called when a worker makes a task ready-to-
     pal_sint32_t  value;
 
     _ReadWriteBarrier();
-    
+
     for ( ; ; ) {
         if (tos == 0) {
             /* no workers are waiting; push the task onto the local ready-to-run queue */
@@ -401,10 +446,10 @@ PAL_TaskSchedulerWakeWorker /* to be called when a worker makes a task ready-to-
 static PAL_TASKID
 PAL_TaskSchedulerStealWork
 (
-    struct PAL_TASK_SCHEDULER *scheduler, 
-    pal_uint32_t const       *steal_list, 
-    pal_uint32_t const    num_steal_list, 
-    pal_uint32_t             start_index, 
+    struct PAL_TASK_SCHEDULER *scheduler,
+    pal_uint32_t const       *steal_list,
+    pal_uint32_t const    num_steal_list,
+    pal_uint32_t             start_index,
     pal_uint32_t             *next_start
 )
 {
@@ -463,7 +508,7 @@ PAL_CpuWorkerThreadMain
     pal_uint32_t       steal_list[4];
 
     /* set the thread name for diagnostics tools */
-    PAL_SetCurrentThreadName("CPU Worker");
+    PAL_ThreadSetName("CPU Worker");
 
     /* acquire a pool of type CPU_WORKER - if this fails, execution cannot proceed */
     if ((thread_pool = PAL_TaskSchedulerAcquireTaskPool(scheduler, pool_type_id, pool_bind_flags)) == NULL) {
@@ -521,14 +566,14 @@ PAL_CpuWorkerThreadMain
                     /* TODO: PAL_TaskComplete */
                 }
 
-                /* executing the task may have produced one or more additional 
-                 * work items in the ready-to-run deque for this thread. 
+                /* executing the task may have produced one or more additional
+                 * work items in the ready-to-run deque for this thread.
                  * keep executing tasks until the queue drains.
                  */
                 current_task = PAL_TaskPoolTakeReadyTask(thread_pool);
             }
         }
-    } 
+    }
     __finally {
         PAL_TaskSchedulerReleaseTaskPool(scheduler, thread_pool);
         return exit_code;
@@ -559,7 +604,7 @@ PAL_AioWorkerThreadMain
     unsigned int           exit_code = 0;
 
     /* set the thread name for diagnostics tools */
-    PAL_SetCurrentThreadName("I/O Worker");
+    PAL_ThreadSetName("I/O Worker");
 
     /* acquire a pool of type AIO_WORKER - if this fails, execution cannot proceed */
     if ((thread_pool = PAL_TaskSchedulerAcquireTaskPool(scheduler, pool_type_id, pool_bind_flags)) == NULL) {
@@ -590,7 +635,7 @@ PAL_AioWorkerThreadMain
                 }
             }
         }
-    } 
+    }
     __finally {
         PAL_TaskSchedulerReleaseTaskPool(scheduler, thread_pool);
         return exit_code;
@@ -650,7 +695,7 @@ PAL_TaskSchedulerTerminateWorkers
 static void
 PAL_TaskPoolQueryMemorySize
 (
-    struct PAL_TASK_POOL_SIZE_INFO *pool_size, 
+    struct PAL_TASK_POOL_SIZE_INFO *pool_size,
     pal_uint32_t                    page_size
 )
 {
@@ -683,10 +728,10 @@ PAL_TaskPoolQueryMemorySize
 static void
 PAL_TaskSchedulerQueryMemorySize
 (
-    struct PAL_TASK_SCHEDULER_SIZE_INFO *size_info, 
-    struct PAL_TASK_POOL_TYPE_COUNTS   *count_info, 
-    struct PAL_TASK_POOL_SIZE_INFO      *pool_size, 
-    struct PAL_TASK_SCHEDULER_INIT           *init, 
+    struct PAL_TASK_SCHEDULER_SIZE_INFO *size_info,
+    struct PAL_TASK_POOL_TYPE_COUNTS   *count_info,
+    struct PAL_TASK_POOL_SIZE_INFO      *pool_size,
+    struct PAL_TASK_SCHEDULER_INIT           *init,
     pal_uint32_t                         page_size
 )
 {
@@ -804,7 +849,7 @@ PAL_TaskSchedulerCreate
     }
 
     /* determine the amount of memory that has to be reserved and make the main allocation */
-    GetNativeSystemInfo(&sysinfo); 
+    GetNativeSystemInfo(&sysinfo);
     page_size     =  sysinfo.dwPageSize;
     PAL_TaskPoolQueryMemorySize(&pool_size, page_size);
     PAL_TaskSchedulerQueryMemorySize(&sched_size, &counts, &pool_size, init, page_size);
@@ -1043,8 +1088,8 @@ PAL_TaskSchedulerDelete
 PAL_API(struct PAL_TASK_POOL*)
 PAL_TaskSchedulerAcquireTaskPool
 (
-    struct PAL_TASK_SCHEDULER *scheduler, 
-    pal_sint32_t            pool_type_id, 
+    struct PAL_TASK_SCHEDULER *scheduler,
+    pal_sint32_t            pool_type_id,
     pal_uint32_t              bind_flags
 )
 {
@@ -1070,13 +1115,13 @@ PAL_TaskSchedulerAcquireTaskPool
             task_pool->NextFreePool = NULL;
         }
     } ReleaseSRWLockExclusive(&free_list->TypeLock);
-    
+
     if (task_pool != NULL) {
         PAL_TASK_DATA *task_data = task_pool->TaskSlotData;
         pal_uint32_t   *slot_ids = task_pool->AllocSlotIds;
 
         if ((bind_flags & PAL_TASK_POOL_BIND_FLAG_MANUAL) == 0) {
-            PAL_TaskSchedulerBindPoolToThread(scheduler, task_pool, PAL_GetCurrentThreadId());
+            PAL_TaskSchedulerBindPoolToThread(scheduler, task_pool, GetCurrentThreadId());
         } else {
             task_pool->OsThreadId = 0;
         }
@@ -1102,11 +1147,11 @@ PAL_TaskSchedulerAcquireTaskPool
 PAL_API(void)
 PAL_TaskSchedulerReleaseTaskPool
 (
-    struct PAL_TASK_SCHEDULER *scheduler, 
+    struct PAL_TASK_SCHEDULER *scheduler,
     struct PAL_TASK_POOL      *task_pool
 )
 {
-    if (task_pool != NULL) { 
+    if (task_pool != NULL) {
         PAL_TASK_POOL_FREE_LIST *free_list = NULL;
         pal_sint32_t const   *type_id_list = scheduler->PoolTypeIds;
         pal_sint32_t          pool_type_id = task_pool->PoolTypeId;
@@ -1135,8 +1180,8 @@ PAL_TaskSchedulerReleaseTaskPool
 PAL_API(int)
 PAL_TaskSchedulerBindPoolToThread
 (
-    struct PAL_TASK_SCHEDULER *scheduler, 
-    struct PAL_TASK_POOL           *pool, 
+    struct PAL_TASK_SCHEDULER *scheduler,
+    struct PAL_TASK_POOL           *pool,
     pal_uint32_t            os_thread_id
 )
 {
@@ -1148,8 +1193,8 @@ PAL_TaskSchedulerBindPoolToThread
 PAL_API(int)
 PAL_TaskCreate
 (
-    struct PAL_TASK_POOL *thread_pool, 
-    PAL_TASKID          *task_id_list, 
+    struct PAL_TASK_POOL *thread_pool,
+    PAL_TASKID          *task_id_list,
     pal_uint32_t           task_count
 )
 {
@@ -1162,7 +1207,7 @@ PAL_TaskCreate
     pal_uint32_t  generation;
     pal_uint32_t  freelist_v;
 
-    if (task_count <= PAL_TASKID_MAX_SLOTS_PER_POOL) { 
+    if (task_count <= PAL_TASKID_MAX_SLOTS_PER_POOL) {
         for ( ; ; ) {
             if (alloc_cur == alloc_max) {
                 /* refill the claimed set */
@@ -1200,7 +1245,7 @@ PAL_TaskCreate
 PAL_API(void)
 PAL_TaskDelete
 (
-    struct PAL_TASK_POOL *thread_pool, 
+    struct PAL_TASK_POOL *thread_pool,
     PAL_TASKID                task_id
 )
 {
@@ -1227,9 +1272,9 @@ PAL_TaskDelete
 PAL_API(struct PAL_TASK*)
 PAL_TaskGetData
 (
-    struct PAL_TASK_POOL *thread_pool, 
-    PAL_TASKID                task_id, 
-    void              **argument_data, 
+    struct PAL_TASK_POOL *thread_pool,
+    PAL_TASKID                task_id,
+    void              **argument_data,
     pal_usize_t   *argument_data_size
 )
 {
@@ -1259,8 +1304,8 @@ PAL_TaskGetData
 static int
 PAL_TaskSchedulerWakeWorker /* to be called when a worker makes a task ready-to-run via publish or complete */
 (
-    struct PAL_TASK_SCHEDULER *scheduler, 
-    struct PAL_TASK_POOL    *worker_pool, 
+    struct PAL_TASK_SCHEDULER *scheduler,
+    struct PAL_TASK_POOL    *worker_pool,
     PAL_TASKID                 give_task
 )
 {
@@ -1289,17 +1334,17 @@ PAL_TaskSchedulerWakeWorker /* to be called when a worker makes a task ready-to-
     /* waiting threads are maintained on a LIFO.
      * if any threads are waiting, pop one and assign it give_task.
      * then sem_post to wake it, and return a value indicating the task was assigned.
-     * if no threads are waiting, return a value indicating the task was not assigned; 
+     * if no threads are waiting, return a value indicating the task was not assigned;
      * the caller should add the task to its RTR queue (or just do that here?) */
 }
 
 static int
 PAL_TaskSchedulerParkWorker /* to be called when a worker runs out of work in its local RTR deque */
 (
-    struct PAL_TASK_SCHEDULER *scheduler, 
-    struct PAL_TASK_POOL    *worker_pool, 
-    pal_uint32_t             *steal_list, 
-    pal_uint32_t          max_steal_list, 
+    struct PAL_TASK_SCHEDULER *scheduler,
+    struct PAL_TASK_POOL    *worker_pool,
+    pal_uint32_t             *steal_list,
+    pal_uint32_t          max_steal_list,
     pal_uint32_t         *num_steal_list
 )
 {
@@ -1341,7 +1386,7 @@ park_thread:
      * if no targets meet the threshold, attempt to CAS the event count with itself.
      * if the CAS succeeds, no events have been published and the worker should park.
      * if the CAS fails, at least one event has been published, so run through again.
-     * if the steal_list has at least one target in it, return a code to the caller 
+     * if the steal_list has at least one target in it, return a code to the caller
      * to indicate that it should attempt to steal from the listed pools. */
 }
 #endif
