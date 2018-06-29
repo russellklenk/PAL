@@ -710,6 +710,18 @@ PAL_ThreadPoolSignalShutdown
     struct PAL_THREAD_POOL *pool
 );
 
+/* @summary Query the thread pool shutdown status. 
+ * This function is intended to be called from a worker thread entry point.
+ * The calling thread does not block while checking the shutdown status.
+ * @param pool The thread pool that owns the calling thread.
+ * @return Non-zero if the thread should shut down.
+ */
+PAL_API(int)
+PAL_ThreadPoolShouldShutdown
+(
+    struct PAL_THREAD_POOL *pool
+);
+
 /* @summary Retrieve the number of threads in a thread pool.
  * @param pool The thread pool to query.
  * @return The number of worker threads in the pool.
@@ -755,18 +767,6 @@ PAL_ThreadPoolGetThreadContext
 (
     struct PAL_THREAD_POOL *pool, 
     pal_uint32_t    thread_index
-);
-
-/* @summary Query the thread pool shutdown status. 
- * This function is intended to be called from a worker thread entry point.
- * The calling thread does not block while checking the shutdown status.
- * @param pool The thread pool that owns the calling thread.
- * @return Non-zero if the thread should shut down.
- */
-PAL_API(int)
-PAL_ThreadPoolShouldShutdown
-(
-    struct PAL_THREAD_POOL *pool
 );
 
 #ifdef __cplusplus
