@@ -33,19 +33,32 @@ typedef HRESULT (WINAPI *PAL_Win32_SetThreadDescription_Fn)
  */
 #pragma pack(push,8)
 typedef struct PAL_WIN32_THREADNAME_INFO {
-    DWORD        dwType;             /* must be 0x1000 */
-    LPCSTR       szName;             /* the name to set */
-    DWORD        dwThreadID;         /* thread ID, or 0xFFFFFFFFUL to use the calling thread ID */
-    DWORD        dwFlags;            /* reserved for future use, set to 0 */
+    DWORD                   dwType;           /* must be 0x1000 */
+    LPCSTR                  szName;           /* the name to set */
+    DWORD                   dwThreadID;       /* thread ID, or 0xFFFFFFFFUL to use the calling thread ID */
+    DWORD                   dwFlags;          /* reserved for future use, set to 0 */
 } PAL_WIN32_THREADNAME_INFO;
 #pragma pack(pop)
 
 /* @summary Define the data associated with a single item in an MPMC concurrent queue.
  */
 typedef struct PAL_MPMC_CELL_U32 {
-    pal_uint32_t Sequence;           /* The sequence number assigned to the cell. */
-    pal_uint32_t Value;              /* The 32-bit integer value stored in the cell. */
+    pal_uint32_t            Sequence;         /* The sequence number assigned to the cell. */
+    pal_uint32_t            Value;            /* The 32-bit integer value stored in the cell. */
 } PAL_MPMC_CELL_U32;
+
+/* @summary Define the data passed to the operating system thread entry point as the argp parameter.
+ */
+typedef struct PAL_WIN32_THREAD_INIT {
+    struct PAL_THREAD_POOL *ThreadPool;       /* The PAL_THREAD_POOL that owns the thread. */
+    PAL_THREAD_FUNC         UserCallbacks;    /* The set of callbacks to invoke for various operations. */
+    void                   *PoolContext;      /* Opaque data supplied by the application and available to each thread. */
+    HANDLE                  ReadySignal;      /* A manual-reset event to be signaled by the thread when it has successfully initialized. */
+    HANDLE                  ErrorSignal;      /* A manual-reset event to be signaled by the thread if it encounters an error during initialization. */
+    HANDLE                  LaunchSignal;     /* A manual-reset event to be waited on by the thread before calling the thread main callback. */
+    pal_uint32_t            ThreadIndex;      /* The zero-based index uniquely identifying the thread within the thread pool. */
+    pal_uint32_t            ThreadCount;      /* The total number of threads in the thread pool. */
+} PAL_WIN32_THREAD_INIT;
 
 /* @summary Implement a replacement for the strcmp function.
  * This function is not optimized and should not be used in performance-critical code.
@@ -130,6 +143,92 @@ PAL_SemaphoreWaitNoSpin
 {
     if (_InterlockedExchangeAdd((volatile LONG*)&sem->ResourceCount, -1) < 1)
         WaitForSingleObject(sem->OSSemaphore, INFINITE);
+}
+
+/* @summary Define a default thread pool thread initialization routine.
+ * @param init Information about the thread. The initialization routine should set PAL_THREAD_INIT::ThreadContext to point to any data associated with the thread.
+ * @return Zero if the thread initialization routine completes successfully, or non-zero if an error occurs.
+ */
+static pal_uint32_t
+PAL_ThreadPool_DefaultThreadInit
+(
+    struct PAL_THREAD_INIT *init
+)
+{
+    init->ThreadContext = NULL;
+    return 0;
+}
+
+/* @summary Implement the thread entry point for a thread pool worker thread.
+ * @param argp A pointer to a PAL_WIN32_THREAD_INIT structure.
+ * @return The thread exit code.
+ */
+static unsigned int __stdcall
+PAL_ThreadPoolThreadEntry
+(
+    void *argp
+)
+{
+    PAL_WIN32_THREAD_INIT *init =(PAL_WIN32_THREAD_INIT*) argp;
+    PAL_ThreadInit_Func th_init = init->UserCallbacks.Init;
+    PAL_ThreadMain_Func th_main = init->UserCallbacks.Main;
+    HANDLE               launch = init->LaunchSignal;
+    DWORD               wait_rc = WAIT_OBJECT_0;
+    pal_uint32_t      exit_code = 0;
+    PAL_THREAD_INIT   th_public;
+
+    __try {
+        /* copy data into the public type */
+        th_public.ThreadPool    = init->ThreadPool;
+        th_public.PoolContext   = init->PoolContext;
+        th_public.ThreadContext = NULL; /* set by th_init */
+        th_public.ThreadIndex   = init->ThreadIndex;
+        th_public.ThreadCount   = init->ThreadCount;
+
+        /* run the thread initialization routine.
+         * these run serialized, one at a time.
+         */
+        if ((exit_code = th_init(&th_public)) != 0) {
+            SetEvent(init->ErrorSignal);
+            return exit_code;
+        }
+        PAL_ThreadPoolSetThreadContext(init->ThreadPool, init->ThreadIndex, th_public.ThreadContext);
+
+        /* indicate that the thread has initialized successfully.
+         * do not access the fields of the init structure past this point.
+         */
+        SetEvent(init->ReadySignal); init = NULL;
+
+        /* wait until the thread pool is launched */
+        if ((wait_rc  = WaitForSingleObject(launch, INFINITE)) == WAIT_OBJECT_0) {
+            /* execute the user thread entry point */
+            exit_code = th_main(&th_public);
+        } else {
+            /* waiting for the launch signal failed */
+            exit_code = GetLastError();
+        }
+    } __finally {
+        /* TODO: cleanup */
+        return exit_code;
+    }
+}
+
+/* @summary Determine the amount of memory required to initialize a thread pool.
+ * @param init Data specifying attributes of the thread pool.
+ * @return The minimum number of bytes required to create a thread pool.
+ */
+static pal_usize_t
+PAL_ThreadPoolQueryMemorySize
+(
+    struct PAL_THREAD_POOL_INIT *init
+)
+{
+    pal_usize_t required_size = 0;
+    required_size += PAL_AllocationSizeType (PAL_THREAD_POOL);
+    required_size += PAL_AllocationSizeArray(unsigned int, init->ThreadCount);
+    required_size += PAL_AllocationSizeArray(HANDLE      , init->ThreadCount);
+    required_size += PAL_AllocationSizeArray(void *      , init->ThreadCount);
+    return required_size;
 }
 
 PAL_API(pal_uint32_t)
@@ -1044,3 +1143,244 @@ PAL_MPMCQueueTake_u32
     cell->Sequence = pos + mask + 1;
     return 1;
 }
+
+PAL_API(struct PAL_THREAD_POOL*)
+PAL_ThreadPoolCreate
+(
+    struct PAL_THREAD_POOL_INIT *init
+)
+{
+    HANDLE                      ready = NULL;
+    HANDLE                      error = NULL;
+    HANDLE                     launch = NULL;
+    pal_uint8_t            *base_addr = NULL;
+    pal_usize_t         required_size = 0;
+    PAL_THREAD_POOL             *pool = NULL;
+    PAL_MEMORY_ARENA            arena;
+    PAL_MEMORY_ARENA_INIT  arena_init;
+    PAL_WIN32_THREAD_INIT thread_init;
+    pal_uint32_t                 i, n;
+    pal_uint32_t        cleanup_count;
+    HANDLE                wait_set[2];
+    DWORD                     wait_rc = WAIT_OBJECT_0;
+    DWORD                  error_code = ERROR_SUCCESS;
+
+    cleanup_count  = 0;
+    required_size  = PAL_ThreadPoolQueryMemorySize(init);
+    if ((base_addr =(pal_uint8_t *) VirtualAlloc(NULL, required_size, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE)) == NULL) {
+        error_code = GetLastError();
+        goto cleanup_and_fail;
+    }
+    if ((ready  = CreateEvent(NULL, TRUE, FALSE, NULL)) == NULL) {
+        error_code = GetLastError();
+        goto cleanup_and_fail;
+    }
+    if ((error  = CreateEvent(NULL, TRUE, FALSE, NULL)) == NULL) {
+        error_code = GetLastError();
+        goto cleanup_and_fail;
+    }
+    if ((launch = CreateEvent(NULL, TRUE, FALSE, NULL)) == NULL) {
+        error_code = GetLastError();
+        goto cleanup_and_fail;
+    }
+    wait_set[0] = ready;
+    wait_set[1] = error;
+
+    /* ensure thread initialization functions are specified */
+    for (i = 0, n = init->ThreadCount; i < n; ++i) {
+        if (init->ThreadFuncs[i].Init == NULL) {
+            init->ThreadFuncs[i].Init  = PAL_ThreadPool_DefaultThreadInit;
+        }
+        if (init->ThreadFuncs[i].Main == NULL) {
+            error_code = ERROR_INVALID_FUNCTION;
+            goto cleanup_and_fail;
+        }
+    }
+
+    /* initialize a memory arena to sub-allocate from the main allocation */
+    arena_init.AllocatorName = __FUNCTION__;
+    arena_init.AllocatorType = PAL_MEMORY_ALLOCATOR_TYPE_HOST;
+    arena_init.MemoryStart   =(pal_uint64_t) base_addr;
+    arena_init.MemorySize    =(pal_uint64_t) required_size;
+    arena_init.UserData      = NULL;
+    arena_init.UserDataSize  = 0;
+    if (PAL_MemoryArenaCreate(&arena, &arena_init) != 0) {
+        error_code = ERROR_ARENA_TRASHED;
+        goto cleanup_and_fail;
+    }
+
+    pool = PAL_MemoryArenaAllocateHostType(&arena, PAL_THREAD_POOL);
+    pool->OsThreadIds     = PAL_MemoryArenaAllocateHostArray(&arena, unsigned int, init->ThreadCount);
+    pool->OsThreadHandles = PAL_MemoryArenaAllocateHostArray(&arena, HANDLE      , init->ThreadCount);
+    pool->ThreadContext   = PAL_MemoryArenaAllocateHostArray(&arena, void *      , init->ThreadCount);
+    pool->PoolContext     = init->PoolContext;
+    pool->LaunchSignal    = launch;
+    pool->ShouldShutdown  = 0;
+    pool->ThreadCount     = init->ThreadCount;
+    for (i = 0, n = init->ThreadCount; i < n; ++i) {
+        HANDLE     thread = NULL;
+        unsigned int   id = 0;
+
+        thread_init.ThreadPool           = pool;
+        thread_init.UserCallbacks.Init   = init->ThreadFuncs[i].Init;
+        thread_init.UserCallbacks.Main   = init->ThreadFuncs[i].Main;
+        thread_init.PoolContext          = init->PoolContext;
+        thread_init.ReadySignal          = ready;
+        thread_init.ErrorSignal          = error;
+        thread_init.LaunchSignal         = launch;
+        thread_init.ThreadIndex          = i;
+        thread_init.ThreadCount          = n;
+        ResetEvent(ready); ResetEvent(error);
+        if ((thread = (HANDLE)_beginthreadex(NULL, 0, PAL_ThreadPoolThreadEntry, &thread_init, 0, &id)) == NULL) {
+            error_code = GetLastError();
+            goto cleanup_and_fail;
+        }
+        pool->OsThreadIds    [cleanup_count] = id;
+        pool->OsThreadHandles[cleanup_count] = thread;
+        cleanup_count++;
+
+        /* wait for initialization to complete */
+        if ((wait_rc = WaitForMultipleObjects(PAL_CountOf(wait_set), wait_set, FALSE, INFINITE)) != WAIT_OBJECT_0) {
+            GetExitCodeThread(thread, &error_code);
+            goto cleanup_and_fail;
+        }
+    }
+    CloseHandle(error);
+    CloseHandle(ready);
+    return pool;
+
+cleanup_and_fail:
+    if (launch) {
+        if (pool && cleanup_count) {
+            /* signal threads to terminate */
+            pool->ShouldShutdown = 1;
+            /* unblock any waiting threads */
+            SetEvent(launch);
+            /* wait for all threads to exit */
+            WaitForMultipleObjects(cleanup_count, pool->OsThreadHandles, TRUE, INFINITE);
+            /* close thread handles */
+            for (i = 0; i < cleanup_count; ++i) {
+                CloseHandle(pool->OsThreadHandles[i]);
+            }
+        }
+        CloseHandle(launch);
+    }
+    if (error) {
+        CloseHandle(error);
+    }
+    if (ready) {
+        CloseHandle(ready);
+    }
+    if (base_addr != NULL) {
+        VirtualFree(base_addr, 0, MEM_RELEASE);
+    }
+    return NULL;
+}
+
+PAL_API(pal_uint32_t)
+PAL_ThreadPoolDelete
+(
+    struct PAL_THREAD_POOL *pool
+)
+{
+    if (pool) {
+        HANDLE    *thread_handles = pool->OsThreadHandles;
+        pal_uint32_t thread_count = pool->ThreadCount;
+        pal_uint32_t    exit_code = 0;
+        pal_uint32_t            i;
+
+        /* signal threads to terminate */
+        pool->ShouldShutdown = 1;
+        /* unblock any waiting threads */
+        SetEvent(pool->LaunchSignal);
+        /* wait for all threads to die */
+        WaitForMultipleObjects(thread_count, thread_handles, TRUE, INFINITE);
+        /* clean up thread handles */
+        for (i = 0; i < thread_count; ++i) {
+            DWORD thread_exit = 0;
+            GetExitCodeThread(thread_handles[i], &thread_exit);
+            CloseHandle(thread_handles[i]);
+            if (thread_exit != 0 && exit_code == 0) {
+                /* save the first non-zero exit code */
+                exit_code = thread_exit;
+            }
+        }
+        CloseHandle(pool->LaunchSignal);
+        VirtualFree(pool, 0, MEM_RELEASE);
+        return exit_code;
+    } else {
+        /* the pool handle is invalid */
+        return 0;
+    }
+}
+
+PAL_API(int)
+PAL_ThreadPoolLaunch
+(
+    struct PAL_THREAD_POOL *pool
+)
+{
+    SetEvent(pool->LaunchSignal);
+    return 0;
+}
+
+PAL_API(void)
+PAL_ThreadPoolSignalShutdown
+(
+    struct PAL_THREAD_POOL *pool
+)
+{
+    pool->ShouldShutdown = 1;
+    SetEvent(pool->LaunchSignal);
+}
+
+PAL_API(int)
+PAL_ThreadPoolShouldShutdown
+(
+    struct PAL_THREAD_POOL *pool
+)
+{
+    return pool->ShouldShutdown;
+}
+
+PAL_API(pal_uint32_t)
+PAL_ThreadPoolGetThreadCount
+(
+    struct PAL_THREAD_POOL *pool
+)
+{
+    return pool->ThreadCount;
+}
+
+PAL_API(void*)
+PAL_ThreadPoolGetPoolContext
+(
+    struct PAL_THREAD_POOL *pool
+)
+{
+    return pool->PoolContext;
+}
+
+PAL_API(void*)
+PAL_ThreadPoolSetThreadContext
+(
+    struct PAL_THREAD_POOL *pool, 
+    pal_uint32_t    thread_index, 
+    void                *context
+)
+{
+    void  *curr_value = pool->ThreadContext[thread_index];
+    pool->ThreadContext[thread_index] = context;
+    return curr_value;
+}
+
+PAL_API(void*)
+PAL_ThreadPoolGetThreadContext
+(
+    struct PAL_THREAD_POOL *pool, 
+    pal_uint32_t    thread_index
+)
+{
+    return pool->ThreadContext[thread_index];
+}
+

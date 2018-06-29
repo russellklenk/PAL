@@ -26,6 +26,88 @@ struct  PAL_SPMC_QUEUE_U32;
 struct  PAL_SPMC_QUEUE_INIT;
 struct  PAL_MPMC_QUEUE_U32;
 struct  PAL_MPMC_QUEUE_INIT;
+struct  PAL_THREAD_INIT;
+struct  PAL_THREAD_FUNC;
+struct  PAL_THREAD_POOL;
+struct  PAL_THREAD_POOL_INIT;
+
+/* @summary Define the signature for the callback implementing the thread initialization routine.
+ * Thread initialization within a thread pool is serialized, such that thread 1's initialization routinue will complete before thread 2's initialization routine begins to run.
+ * All thread initialization routines must complete successfully before any thread entry point will run. 
+ * @param init Information about the thread. The initialization routine should set PAL_THREAD_INIT::ThreadContext to point to any data associated with the thread.
+ * @return Zero if the thread initialization routine completes successfully, or non-zero if an error occurs.
+ */
+typedef pal_uint32_t (*PAL_ThreadInit_Func)
+(
+    struct PAL_THREAD_INIT *init
+);
+
+/* @summary Define the signature for the callback implementing the thread body.
+ * The thread entry point runs after the thread initialization routine has run for all threads in the pool.
+ * All threads within the pool will begin running at approximately the same time (given hardware limits).
+ * @param init Information about the thread, including information returned by the initialization routine.
+ * @return The thread exit code. This value is typically zero to indicate a normal exit.
+ */
+typedef pal_uint32_t (*PAL_ThreadMain_Func)
+(
+    struct PAL_THREAD_INIT *init
+);
+
+/* @summary Define the data used to configure a single-producer, single-consumer bounded concurrent queue.
+ */
+typedef struct PAL_SPSC_QUEUE_INIT {
+    pal_uint32_t                       Capacity;               /* The queue capacity, in items. This value must be a power-of-two greater than zero. */
+    pal_uint32_t                       UsageFlags;             /* Currently unused. Set to 0. */
+    void                              *MemoryStart;            /* Pointer to the start of the memory block allocated for the storage array. */
+    pal_uint64_t                       MemorySize;             /* The size of the memory block allocated for the storage array, in bytes. */
+} PAL_SPSC_QUEUE_INIT;
+
+/* @summary Define the data used to configure a single-producer, multiple-consumer bounded concurrent queue.
+ */
+typedef struct PAL_SPMC_QUEUE_INIT {
+    pal_uint32_t                       Capacity;               /* The queue capacity, in items. This value must be a power-of-two greater than zero. */
+    pal_uint32_t                       UsageFlags;             /* Currently unused. Set to 0. */
+    void                              *MemoryStart;            /* Pointer to the start of the memory block allocated for the storage array. */
+    pal_uint64_t                       MemorySize;             /* The size of the memory block allocated for the storage array, in bytes. */
+} PAL_SPMC_QUEUE_INIT;
+
+/* @summary Define the data used to configure a multiple-producer, multiple-consumer bounded concurrent queue.
+ */
+typedef struct PAL_MPMC_QUEUE_INIT {
+    pal_uint32_t                       Capacity;               /* The queue capacity, in items. This value must be a power-of-two greater than zero. */
+    pal_uint32_t                       UsageFlags;             /* Currently unused. Set to 0. */
+    void                              *MemoryStart;            /* Pointer to the start of the memory block allocated for the storage array. */
+    pal_uint64_t                       MemorySize;             /* The size of the memory block allocated for the storage array, in bytes. */
+} PAL_MPMC_QUEUE_INIT;
+
+/* @summary Define the data associated with thread initialization.
+ * When this structure is passed into PAL_ThreadInit_Func, the ThreadContext field is NULL.
+ * The thread initialization routine should set the ThreadContext field to point to data to pass through the thread entry point.
+ * When this structure is passed into PAL_ThreadMain_Func, the ThreadContext field has the value set by the thread initialization routine.
+ */
+typedef struct PAL_THREAD_INIT {
+    struct PAL_THREAD_POOL            *ThreadPool;             /* The thread pool that owns the thread. */
+    void                              *PoolContext;            /* Opaque data supplied by the application in the PAL_THREAD_POOL_INIT::PoolContext field. */
+    void                              *ThreadContext;          /* Additional data to be associated with each individual thread in the pool. */
+    pal_uint32_t                       ThreadIndex;            /* The zero-based index of the thread within the pool. This value uniquely identifies the thread. */
+    pal_uint32_t                       ThreadCount;            /* The total number of threads in the pool. */
+} PAL_THREAD_INIT;
+
+/* @summary Define the callbacks associated with each thread in a thread pool.
+ */
+typedef struct PAL_THREAD_FUNC {
+    PAL_ThreadInit_Func                Init;                   /* The thread initialization routinue. */
+    PAL_ThreadMain_Func                Main;                   /* The thread entry point routinue. */
+} PAL_THREAD_FUNC;
+
+/* @summary Define the data used to create a thread pool.
+ * Thread pools are primarily useful for testing. Generally, if the application needs to execute work across threads, it should use the task system instead.
+ */
+typedef struct PAL_THREAD_POOL_INIT {
+    void                              *PoolContext;            /* Opaque data to be supplied to each thread in the pool during initialization and execution. */
+    struct PAL_THREAD_FUNC            *ThreadFuncs;            /* An array of ThreadCount PAL_THREAD_FUNC structures specifying the initialization and entry point routines for each thread. */
+    pal_uint32_t                       ThreadCount;            /* The number of threads in the thread pool. */
+} PAL_THREAD_POOL_INIT;
 
 /* @summary Define various flags that can be bitwise OR'd to control the behavior of an SPSC concurrent queue.
  */
@@ -583,6 +665,108 @@ PAL_MPMCQueueTake_u32
 (
     struct PAL_MPMC_QUEUE_U32 *mpmc_queue, 
     pal_uint32_t                    *item
+);
+
+/* @summary Create a thread pool and run all initialization routines.
+ * When this function returns, all threads are initialized, but are waiting for a call to PAL_ThreadPoolLaunch.
+ * @param init Data used to configure the thread pool.
+ * @return The thread pool, or NULL if an error occurred.
+ */
+PAL_API(struct PAL_THREAD_POOL*)
+PAL_ThreadPoolCreate
+(
+    struct PAL_THREAD_POOL_INIT *init
+);
+
+/* @summary Wait for all threads in a thread pool to exit, and free any resources associated with the pool.
+ * The application is responsible for signaling all threads to terminate, if necessary.
+ * The calling thread will block until all threads have exited.
+ * @param pool The thread pool to stop and delete.
+ * @return Zero if all threads in the pool exited normally with an exit code of zero, or the first non-zero exit code.
+ */
+PAL_API(pal_uint32_t)
+PAL_ThreadPoolDelete
+(
+    struct PAL_THREAD_POOL *pool
+);
+
+/* @summary Launch all threads in the pool, calling the thread entry point for each.
+ * @param pool The thread pool to launch.
+ * @return Zero if the thread pool has launched successfully, or non-zero if an error occurred.
+ */
+PAL_API(int)
+PAL_ThreadPoolLaunch
+(
+    struct PAL_THREAD_POOL *pool
+);
+
+/* @summary Signal all threads in a thread pool that they should shutdown.
+ * The calling thread does not wait until all threads shut down.
+ * @param pool The thread pool to signal.
+ */
+PAL_API(void)
+PAL_ThreadPoolSignalShutdown
+(
+    struct PAL_THREAD_POOL *pool
+);
+
+/* @summary Retrieve the number of threads in a thread pool.
+ * @param pool The thread pool to query.
+ * @return The number of worker threads in the pool.
+ */
+PAL_API(pal_uint32_t)
+PAL_ThreadPoolGetThreadCount
+(
+    struct PAL_THREAD_POOL *pool
+);
+
+/* @summary Retrieve the context data associated with a thread pool.
+ * @param pool The thread pool to query.
+ * @return The context value associated with the pool at initialization time.
+ */
+PAL_API(void*)
+PAL_ThreadPoolGetPoolContext
+(
+    struct PAL_THREAD_POOL *pool
+);
+
+/* @summary Retrieve the thread-local context data for a thread.
+ * @param pool The thread pool that owns the worker thread.
+ * @param thread_index The zero-based index of the worker thread.
+ * @param context The value to associate with the thread context slot.
+ * @return The value previously associated with the thread context slot.
+ */
+PAL_API(void*)
+PAL_ThreadPoolSetThreadContext
+(
+    struct PAL_THREAD_POOL *pool, 
+    pal_uint32_t    thread_index, 
+    void                *context
+);
+
+/* @summary Retrieve the thread-local context data for a thread. 
+ * Calls to this function must be externally synchronized.
+ * @param pool The thread pool that owns the worker thread.
+ * @param thread_index The zero-based index of the worker thread.
+ * @return The value associated with the thread context slot.
+ */
+PAL_API(void*)
+PAL_ThreadPoolGetThreadContext
+(
+    struct PAL_THREAD_POOL *pool, 
+    pal_uint32_t    thread_index
+);
+
+/* @summary Query the thread pool shutdown status. 
+ * This function is intended to be called from a worker thread entry point.
+ * The calling thread does not block while checking the shutdown status.
+ * @param pool The thread pool that owns the calling thread.
+ * @return Non-zero if the thread should shut down.
+ */
+PAL_API(int)
+PAL_ThreadPoolShouldShutdown
+(
+    struct PAL_THREAD_POOL *pool
 );
 
 #ifdef __cplusplus
