@@ -104,15 +104,6 @@ typedef struct PAL_SPSC_QUEUE_U32 {
     pal_uint8_t                        PadDequeue[60];         /* Separate the DequeuePos from any subsequent data. */
 } PAL_SPSC_QUEUE_U32;
 
-/* @summary Define the data used to configure a single-producer, single-consumer bounded concurrent queue.
- */
-typedef struct PAL_SPSC_QUEUE_INIT {
-    pal_uint32_t                       Capacity;               /* The queue capacity, in items. This value must be a power-of-two greater than zero. */
-    pal_uint32_t                       UsageFlags;             /* Currently unused. Set to 0. */
-    void                              *MemoryStart;            /* Pointer to the start of the memory block allocated for the storage array. */
-    pal_uint64_t                       MemorySize;             /* The size of the memory block allocated for the storage array, in bytes. */
-} PAL_SPSC_QUEUE_INIT;
-
 /* @summary Define the data associated with a fixed-size, SPMC concurrent queue of 32-bit unsigned integers.
  * The queue capacity must be a power-of-two.
  * The queue is actually a double-ended queue, supporting the operations PUSH, TAKE and STEAL.
@@ -131,15 +122,6 @@ typedef struct PAL_SPMC_QUEUE_U32 {
     pal_sint64_t                       PublicPos;              /* A monotonically-increasing integer representing the position of the next dequeue operation in the storage array. */
     pal_uint8_t                        PadPublic[56];          /* Separate the PublicPos from any subsequent data. */
 } PAL_SPMC_QUEUE_U32;
-
-/* @summary Define the data used to configure a single-producer, multiple-consumer bounded concurrent queue.
- */
-typedef struct PAL_SPMC_QUEUE_INIT {
-    pal_uint32_t                       Capacity;               /* The queue capacity, in items. This value must be a power-of-two greater than zero. */
-    pal_uint32_t                       UsageFlags;             /* Currently unused. Set to 0. */
-    void                              *MemoryStart;            /* Pointer to the start of the memory block allocated for the storage array. */
-    pal_uint64_t                       MemorySize;             /* The size of the memory block allocated for the storage array, in bytes. */
-} PAL_SPMC_QUEUE_INIT;
 
 /* @summary Define the data associated with a fixed-size, MPMC concurrent queue. 
  * The queue capacity must be a power-of-two.
@@ -161,13 +143,16 @@ typedef struct PAL_MPMC_QUEUE_U32 {
     pal_uint8_t                        PadDequeue[60];         /* Separate the DequeuePos from any subsequent data. */
 } PAL_MPMC_QUEUE_U32;
 
-/* @summary Define the data used to configure a multiple-producer, multiple-consumer bounded concurrent queue.
+/* @summary Define the data associated with a thread pool.
  */
-typedef struct PAL_MPMC_QUEUE_INIT {
-    pal_uint32_t                       Capacity;               /* The queue capacity, in items. This value must be a power-of-two greater than zero. */
-    pal_uint32_t                       UsageFlags;             /* Currently unused. Set to 0. */
-    void                              *MemoryStart;            /* Pointer to the start of the memory block allocated for the storage array. */
-    pal_uint64_t                       MemorySize;             /* The size of the memory block allocated for the storage array, in bytes. */
-} PAL_MPMC_QUEUE_INIT;
+typedef struct PAL_THREAD_POOL {
+    unsigned int                      *OsThreadIds;            /* An array of ThreadCount operating system thread identifiers. */
+    HANDLE                            *OsThreadHandles;        /* An array of ThreadCount operating system thread handles. */
+    void                             **ThreadContext;          /* An array of ThreadCount pointers to per-thread context data.*/
+    void                              *PoolContext;            /* Opaque data supplied by the application and associated with the thread pool. */
+    HANDLE                             LaunchSignal;           /* A manual-reset event used to synchronize thread launch. */
+    LONG volatile                      ShouldShutdown;         /* A boolean flag that becomes non-zero when threads should stop running. */
+    pal_uint32_t                       ThreadCount;            /* The total number of threads in the pool. */
+} PAL_THREAD_POOL;
 
 #endif /* __PAL_WIN32_THREAD_H__ */
