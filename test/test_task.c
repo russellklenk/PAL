@@ -216,7 +216,6 @@ int main
     char **argv
 )
 {
-    PAL_TASK_SCHEDULER                *sched;
     PAL_HOST_MEMORY_ALLOCATION  global_alloc;
     PAL_HOST_MEMORY_ALLOCATION scratch_alloc;
     PAL_MEMORY_ARENA_INIT  global_arena_init;
@@ -229,9 +228,6 @@ int main
     pal_usize_t                  global_size = Megabytes(16);
     pal_usize_t                 scratch_size = Kilobytes(128);
 
-    PAL_TASK_POOL *main_pool = NULL;
-    PAL_TASKID *id_list = NULL;
-    pal_uint32_t i, j, n;
 #if 0
     int                                  res;
 #endif
@@ -271,6 +267,11 @@ int main
     global_arena_init.UserDataSize  = 0;
     PAL_MemoryArenaCreate(&global_arena, &global_arena_init);
 
+#if 0
+    PAL_TASK_SCHEDULER *sched = NULL;
+    PAL_TASK_POOL *main_pool = NULL;
+    PAL_TASKID *id_list = NULL;
+    pal_uint32_t i, j, n;
     sched = CreateTaskScheduler(ALLOW_MULTI_CORE, PRINT_CONFIGURATION);
     id_list = PAL_MemoryArenaAllocateHostArray(&global_arena, PAL_TASKID, 1024);
     main_pool = PAL_TaskSchedulerAcquireTaskPool(sched, PAL_TASK_POOL_TYPE_ID_MAIN, 0);
@@ -281,6 +282,7 @@ int main
         }
     }
     DeleteTaskScheduler(sched);
+#endif
 
     /* execute functional tests */
 #if 0
