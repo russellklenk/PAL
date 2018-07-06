@@ -5,28 +5,124 @@
 #include "pal_win32_thread.h"
 #include "pal_win32_memory.h"
 
+/* @summary Define various constants related to the PAL_TASK_DATA::StateTag field.
+ * The state tag maintains several bits of state data packed into a 32-bit integer value.
+ *
+ * The state tag consists of the following components:
+ * 31......................|.|....|.....0
+ *   UUUUUUUUUUUUUUUUUUUUUU|C|PPPP|GGGGG
+ * Starting from the most-significant bit:
+ * - U represents an unused bit.
+ * - C is set if the task has been cancelled, or is clear otherwise.
+ * - P tracks the number of values in the PAL_TASK_DATA::Permits array.
+ * - G specifies the current generation value for the task data slot.
+ *   When a task transitions to a completed state, the generation is incremented.
+ */
+#ifndef PAL_TASK_STATE_TAG_CONSTANTS
+#   define PAL_TASK_STATE_TAG_CONSTANTS            
+#   define PAL_TASK_STATE_TAG_CANCL_BITS           1
+#   define PAL_TASK_STATE_TAG_NPERM_BITS           4
+#   define PAL_TASK_STATE_TAG_GENER_BITS           PAL_TASKID_GENER_BITS
+#   define PAL_TASK_STATE_TAG_GENER_SHIFT          0
+#   define PAL_TASK_STATE_TAG_NPERM_SHIFT         (PAL_TASK_STATE_TAG_GENER_SHIFT + PAL_TASK_STATE_TAG_GENER_BITS)
+#   define PAL_TASK_STATE_TAG_CANCL_SHIFT         (PAL_TASK_STATE_TAG_NPERM_SHIFT + PAL_TASK_STATE_TAG_NPERM_BITS)
+#   define PAL_TASK_STATE_TAG_GENER_MASK         ((1UL << PAL_TASK_STATE_TAG_GENER_BITS) - 1)
+#   define PAL_TASK_STATE_TAG_NPERM_MASK         ((1UL << PAL_TASK_STATE_TAG_NPERM_BITS) - 1)
+#   define PAL_TASK_STATE_TAG_CANCL_MASK         ((1UL << PAL_TASK_STATE_TAG_CANCL_BITS) - 1)
+#   define PAL_TASK_STATE_TAG_GENER_MASK_PACKED   (PAL_TASK_STATE_TAG_GENER_MASK << PAL_TASK_STATE_TAG_GENER_SHIFT)
+#   define PAL_TASK_STATE_TAG_NPERM_MASK_PACKED   (PAL_TASK_STATE_TAG_NPERM_MASK << PAL_TASK_STATE_TAG_NPERM_SHIFT)
+#   define PAL_TASK_STATE_TAG_CANCL_MASK_PACKED   (PAL_TASK_STATE_TAG_CANCL_MASK << PAL_TASK_STATE_TAG_CANCL_SHIFT)
+#   define PAL_TASK_STATE_TAG_MAX_PERMITS_LISTS  ((1UL << PAL_TASK_STATE_TAG_NPERM_BITS) - 1)
+#   define PAL_TASK_NOT_CANCELLED                  0
+#   define PAL_TASK_CANCELLED                      1
+#endif
+
 /* @summary Define the value sent to the completion port and received in the lpCompletionKey parameter of GetQueuedCompletionStatus when the thread should terminate.
  */
 #ifndef PAL_COMPLETION_KEY_SHUTDOWN
-#   define PAL_COMPLETION_KEY_SHUTDOWN    PAL_TASKID_NONE
+#   define PAL_COMPLETION_KEY_SHUTDOWN             PAL_TASKID_NONE
 #endif
 
 /* @summary Define the value sent to the completion port and received in the lpCompletionKey parameter of GetQueuedCompletionStatus when the thread receives a task ID.
  */
 #ifndef PAL_COMPLETION_KEY_TASKID
-#   define PAL_COMPLETION_KEY_TASKID     (~(ULONG_PTR) 1)
+#   define PAL_COMPLETION_KEY_TASKID              (~(ULONG_PTR) 1)
 #endif
 
-/* @summary Define the number of slots committed when the task pool storage needs to grow.
+/* @summary Define the number of permit lists committed when the task pool permit list storage needs to grow.
+ * Each PAL_PERMITS_LIST is 128 bytes, so committing a single chunk commits 16KB, up to a maximum of 8MB.
  */
-#ifndef PAL_TASK_CHUNK_SIZE
-#   define PAL_TASK_CHUNK_SIZE            1024U
+#ifndef PAL_PERMIT_LIST_CHUNK_SIZE
+#   define PAL_PERMIT_LIST_CHUNK_SIZE              128U
 #endif
 
-/* @summary Define the maximum number of task chunks that can be committed for a task pool.
+/* @summary Define the maximum number of permit list chunks that can be committed for a task pool.
  */
-#ifndef PAL_TASK_CHUNK_COUNT
-#   define PAL_TASK_CHUNK_COUNT          (PAL_TASKID_MAX_SLOTS_PER_POOL / PAL_TASK_CHUNK_SIZE)
+#ifndef PAL_PERMIT_LIST_CHUNK_COUNT
+#   define PAL_PERMIT_LIST_CHUNK_COUNT            (PAL_TASKID_MAX_SLOTS_PER_POOL / PAL_PERMIT_LIST_CHUNK_SIZE)
+#endif
+
+/* @summary Define the number of slots committed when the task pool data storage needs to grow.
+ * Each PAL_TASK_DATA is 256 bytes, so committing a single chunk commits 256KB, up to a maximum of 16MB.
+ */
+#ifndef PAL_TASK_DATA_CHUNK_SIZE
+#   define PAL_TASK_DATA_CHUNK_SIZE                1024U
+#endif
+
+/* @summary Define the maximum number of task data chunks that can be committed for a task pool.
+ */
+#ifndef PAL_TASK_DATA_CHUNK_COUNT
+#   define PAL_TASK_DATA_CHUNK_COUNT              (PAL_TASKID_MAX_SLOTS_PER_POOL / PAL_TASK_DATA_CHUNK_SIZE)
+#endif
+
+/* @summary Check a task state tag to determine whether the task has been marked as cancelled.
+ * @param _tag The state tag to query.
+ * @return Non-zero if the task has its cancellation bit set.
+ */
+#ifndef PAL_TaskStateTagIsTaskCancelled
+#define PAL_TaskStateTagIsTaskCancelled(_tag)                                  \
+    (((_tag) & PAL_TASK_STATE_TAG_CANCL_MASK_PACKED) != 0)
+#endif
+
+/* @summary Retrieve the number of items in the PAL_TASK_DATA::Permits array from a task state tag.
+ * @param _tag The state tag to query.
+ * @return The number of valid entries in the PAL_TASK_DATA::Permits array.
+ */
+#ifndef PAL_TaskStateTagGetPermitsCount
+#define PAL_TaskStateTagGetPermitsCount(_tag)                                  \
+    (((_tag) & PAL_TASK_STATE_TAG_NPERM_MASK_PACKED) >> PAL_TASK_STATE_TAG_NPERM_SHIFT)
+#endif
+
+/* @summary Update a task state tag, setting the number of entries in the PAL_TASK_DATA::Permits array and preserving the remaining values.
+ * @param _tag The state tag value.
+ * @param _n The number of entries in the Permits array.
+ * @return The updated tag value.
+ */
+#ifndef PAL_TaskStateTagUpdatePermitsCount
+#define PAL_TaskStateTagUpdatePermitsCount(_tag, _n)                           \
+    (((_tag) & ~PAL_TASK_STATE_TAG_NPERM_MASK_PACKED) | (((_n) & PAL_TASK_STATE_TAG_NPERM_MASK) << PAL_TASK_STATE_TAG_NPERM_SHIFT))
+#endif
+
+/* @summary Retrieve the task slot generation value from a task state tag.
+ * @param _tag The state tag to query.
+ * @return The generation value of the task data slot.
+ */
+#ifndef PAL_TaskStateTagGetGeneration
+#define PAL_TaskStateTagGetGeneration(_tag)                                    \
+    (((_tag) & PAL_TASK_STATE_TAG_GENER_MASK_PACKED) >> PAL_TASK_STATE_TAG_GENER_SHIFT)
+#endif
+
+/* @summary Construct a task state tag value from its constituent parts.
+ * @param _cancl The cancellation status of the task. This value should be 1 for cancelled, or 0 for not cancelled.
+ * @param _nperm The number of items in the PAL_TASK_DATA::Permits array.
+ * @param _gener The generation value for the task data slot.
+ * @return The packed task state tag value.
+ */
+#ifndef PAL_TaskStateTagPack
+#define PAL_TaskStateTagPack(_cancl, _nperm, _gener)                           \
+   ((((_cancl) & PAL_TASK_STATE_TAG_CANCL_MASK) << PAL_TASK_STATE_TAG_CANCL_SHIFT) | \
+    (((_nperm) & PAL_TASK_STATE_TAG_NPERM_MASK) << PAL_TASK_STATE_TAG_NPERM_SHIFT) | \
+    (((_gener) & PAL_TASK_STATE_TAG_GENER_MASK) << PAL_TASK_STATE_TAG_GENER_SHIFT))
 #endif
 
 /* @summary Extract the PAL_TASK_DATA array index value from a freelist value.
@@ -150,36 +246,252 @@ PAL_DefaultTaskWorkerInit
     return 0;
 }
 
+/* @summary Convert a permit list pointer into the corresponding array index.
+ * @param owner_pool The PAL_TASK_POOL from which the permits list was allocated.
+ * The PAL_PERMITS_LIST::PoolIndex field for p_list must match the PAL_TASK_POOL::PoolIndex field for owner_pool.
+ * @param p_list The permits list for which the array index will be calculated.
+ * @return The zero-based array index of p_list within the PermitListData field of owner_pool.
+ */
+static PAL_INLINE pal_uint32_t
+PAL_TaskPoolGetSlotIndexForPermitList
+(
+    struct PAL_TASK_POOL *owner_pool, 
+    struct PAL_PERMITS_LIST  *p_list
+)
+{
+    pal_uint8_t *p_base = (pal_uint8_t*) owner_pool->PermitListData;
+    pal_uint8_t *p_addr = (pal_uint8_t*) p_list;
+    return (pal_uint32_t)((p_addr - p_base) / sizeof(PAL_PERMITS_LIST));
+}
+
 /* @summary Return a task slot to the free list for the owning task pool.
- * @param thread_pool The PAL_TASK_POOL from which the task slot was allocated.
+ * This operation is performed during final completion of a task; that is, when the task and all of its child tasks have completed.
+ * @param owner_pool The PAL_TASK_POOL from which the task slot was allocated.
  * @param slot_index The zero-based index of the PAL_TASK_DATA slot to mark as available.
  * @param generation The generation value associated with the PAL_TASK_DATA slot.
  */
 static void
 PAL_TaskPoolMakeTaskSlotFree /* this only does the return - not the generation update */
 (
-    struct PAL_TASK_POOL *thread_pool,
-    pal_uint32_t           slot_index,
-    pal_uint32_t           generation
+    struct PAL_TASK_POOL *owner_pool,
+    pal_uint32_t          slot_index,
+    pal_uint32_t          generation
 )
 {
     pal_uint32_t      packed = PAL_TaskSlotPack(slot_index, generation);
-    pal_uint32_t *free_slots = thread_pool->AllocSlotIds;
-    pal_uint64_t   write_pos = thread_pool->FreeCount;
+    pal_uint32_t *free_slots = owner_pool->AllocSlotIds;
+    pal_uint64_t   write_pos = owner_pool->SlotFreeCount;
     pal_uint64_t       value;
 
-    _ReadWriteBarrier(); /* load-acquire */
+    _ReadWriteBarrier(); /* load-acquire for owner_pool->SlotFreeCount */
 
     for ( ; ; ) {
         /* write the slot_index to the AllocSlotIds list */
         free_slots[write_pos & 0xFFFF] = packed;
         /* attempt to update and 'claim' the free count */
-        if ((value =(pal_uint64_t)_InterlockedCompareExchange64((volatile LONGLONG*)&thread_pool->FreeCount, (LONGLONG)(write_pos+1), (LONGLONG) write_pos)) == write_pos) {
+        if ((value =(pal_uint64_t)_InterlockedCompareExchange64((volatile LONGLONG*)&owner_pool->SlotFreeCount, (LONGLONG)(write_pos+1), (LONGLONG) write_pos)) == write_pos) {
             /* the count was successfully updated */
             return;
         }
         /* try again with a new write position */
         write_pos = value;
+    }
+}
+
+/* @summary Return a permits list to the free list for the owning task pool.
+ * This operation is performed during final completion of a task that prevents one or more tasks from running.
+ * @param owner_pool The PAL_TASK_POOL from which the permits list was allocated.
+ * @param list_index The zero-based index of the PAL_PERMITS_LIST being returned to the free pool.
+ * This index can be calculated using PAL_TaskPoolGetSlotIndexForPermitList.
+ */
+static void
+PAL_TaskPoolMakePermitsListFree /* this only does the return - not the generation update */
+(
+    struct PAL_TASK_POOL *owner_pool, 
+    pal_uint32_t          list_index
+)
+{
+    pal_uint32_t *free_slots = owner_pool->PermitSlotIds;
+    pal_uint64_t   write_pos = owner_pool->PermitFreeCount;
+    pal_uint64_t       value;
+
+    _ReadWriteBarrier(); /* load-acquire for owner_pool->PermitFreeCount */
+
+    for ( ; ; ) {
+        /* write the slot index to the PermitSlotIds list */
+        free_slots[write_pos & 0xFFFF] = list_index;
+        /* attempt to update and 'claim' the free count */
+        if ((value =(pal_uint64_t)_InterlockedCompareExchange64((volatile LONGLONG*)&owner_pool->PermitFreeCount, (LONGLONG)(write_pos+1), (LONGLONG) write_pos)) == write_pos) {
+            /* the free count was successfully updated */
+            return;
+        }
+        /* try again with a new write position */
+        write_pos = value;
+    }
+}
+
+/* @summary Commit one or more additional chunks of task slot data, backing it with physical memory.
+ * This operation is performed when allocating task IDs during PAL_TaskCreate.
+ * @param thread_pool The PAL_TASK_POOL bound to the thread executing PAL_TaskCreate.
+ * @param slots_needed The number of additional task data slots required by the call to PAL_TaskCreate.
+ */
+static void
+PAL_TaskPoolCommitTaskDataChunks
+(
+    struct PAL_TASK_POOL *thread_pool, 
+    pal_uint32_t         slots_needed
+)
+{
+    if (thread_pool->MaxTaskSlots < PAL_TASKID_MAX_SLOTS_PER_POOL) {
+        void           *base_addr =&thread_pool->TaskSlotData[thread_pool->MaxTaskSlots];
+        pal_uint32_t  chunks_need =(slots_needed + (PAL_TASK_DATA_CHUNK_SIZE-1)) / PAL_TASK_DATA_CHUNK_SIZE;
+        pal_uint32_t  slots_added = chunks_need  *  PAL_TASK_DATA_CHUNK_SIZE;
+        pal_usize_t  commit_bytes = slots_added  *  sizeof(PAL_TASK_DATA);
+        pal_uint32_t      new_pos = thread_pool->MaxTaskSlots;
+        pal_uint32_t      new_max = thread_pool->MaxTaskSlots + slots_added;
+        if (VirtualAlloc(base_addr, commit_bytes, MEM_COMMIT, PAGE_READWRITE) == base_addr) {
+            thread_pool->MaxTaskSlots = new_max;
+            do { /* add the new slots to the free list */
+                PAL_TaskPoolMakeTaskSlotFree(thread_pool, new_pos++, 0);
+            } while (new_pos < new_max);
+        }
+    }
+}
+
+/* @summary Commit one or more additional chunks of task slot data, backing it with physical memory.
+ * This operation is performed when publishing tasks with dependencies during PAL_TaskPublish.
+ * @param thread_pool The PAL_TASK_POOL bound to the thread executing PAL_TaskPublish.
+ * @param lists_needed The number of additional permit lists required by the call to PAL_TaskPublish.
+ */
+static void
+PAL_TaskPoolCommitPermitsListChunks
+(
+    struct PAL_TASK_POOL *thread_pool, 
+    pal_uint32_t         lists_needed
+)
+{
+    if (thread_pool->MaxPermitLists < PAL_TASKID_MAX_SLOTS_PER_POOL) {
+        void           *base_addr =&thread_pool->PermitListData[thread_pool->MaxPermitLists];
+        pal_uint32_t  chunks_need =(lists_needed + (PAL_PERMIT_LIST_CHUNK_SIZE-1)) / PAL_PERMIT_LIST_CHUNK_SIZE;
+        pal_uint32_t  lists_added = chunks_need  *  PAL_PERMIT_LIST_CHUNK_SIZE;
+        pal_usize_t  commit_bytes = lists_added  *  sizeof(PAL_PERMITS_LIST);
+        pal_uint32_t      new_pos = thread_pool->MaxPermitLists;
+        pal_uint32_t      new_max = thread_pool->MaxPermitLists + lists_added;
+        if (VirtualAlloc(base_addr, commit_bytes, MEM_COMMIT, PAGE_READWRITE) == base_addr) {
+            thread_pool->MaxPermitLists = new_max;
+            do { /* add the new slots to the free list */
+                PAL_TaskPoolMakePermitsListFree(thread_pool, new_pos++);
+            } while (new_pos < new_max);
+        }
+    }
+}
+
+/* @summary Allocate one or more permits lists from a task pool.
+ * This operation is performed when publishing tasks and converting dependencies into permits.
+ * The calling thread is blocked until all permits lists can be returned.
+ * @param owner_pool The PAL_TASK_POOL that is publishing the potentially blocked tasks.
+ * @param list_array An array to be filled with pointers to list_count permit lists.
+ * @param list_count The number of PAL_PERMITS_LIST objects to allocate from the pool.
+ * @return Zero if the permits lists were successfully allocated, or non-zero if an error occurred.
+ */
+static int
+PAL_TaskPoolAllocatePermitsLists
+(
+    struct PAL_TASK_POOL     *owner_pool, 
+    struct PAL_PERMITS_LIST **list_array, 
+    pal_uint32_t              list_count
+)
+{
+    PAL_PERMITS_LIST *p_base = owner_pool->PermitListData;
+    pal_uint32_t  *slot_list = owner_pool->PermitSlotIds;
+    pal_uint64_t   alloc_max = owner_pool->PermitAllocCount;
+    pal_uint64_t   alloc_cur = owner_pool->PermitAllocNext;
+    pal_uint32_t write_index = 0;
+    pal_uint32_t  freelist_v;
+
+    if (list_count <= PAL_TASKID_MAX_SLOTS_PER_POOL) {
+        for ( ; ; ) {
+            if (alloc_cur == alloc_max) {
+                /* refill the claimed set */
+                alloc_cur  =(pal_uint64_t)_InterlockedExchange64((volatile LONGLONG*) &owner_pool->PermitAllocCount, (LONGLONG) owner_pool->PermitFreeCount);
+                alloc_max  = owner_pool->PermitAllocCount;
+                if (alloc_cur == alloc_max) {
+                    if (owner_pool->MaxPermitLists < PAL_TASKID_MAX_SLOTS_PER_POOL) {
+                        /* commit additional permit lists, if possible */
+                        PAL_TaskPoolCommitPermitsListChunks(owner_pool, list_count - write_index);
+                    } else {
+                        /* no choice but to wait for some work to finish and try again */
+                        YieldProcessor();
+                    }
+                }
+            }
+            while (alloc_cur != alloc_max) {
+                /* allocate from the claimed set */
+                freelist_v = slot_list[(alloc_cur++) & 0xFFFF];
+                list_array[write_index++] = &p_base[freelist_v];
+                if (write_index == list_count) {
+                    owner_pool->PermitAllocNext = alloc_cur;
+                    return 0;
+                }
+            }
+        }
+    } else {
+        /* attempt to allocate too many permits lists */
+        return -1;
+    }
+}
+
+/* @summary Attempt to publish a permits list to a task.
+ * @param blocking_task The PAL_TASK_DATA associated with the task that is preventing the tasks in the permits list from running.
+ * @param permits_list The PAL_PERMITS_LIST specifying the task identifiers of the tasks that cannot run until the blocking task completes.
+ * @param blocking_task_id The identifier of the blocking task.
+ * @return One if the blocking task has not completed and the permits list was published, or zero otherwise.
+ */
+static pal_uint32_t
+PAL_TaskDataPublishPermitsList
+(
+    struct PAL_TASK_DATA   *blocking_task, 
+    struct PAL_PERMITS_LIST *permits_list, 
+    PAL_TASKID           blocking_task_id
+)
+{
+    pal_uint32_t    task_gen = PAL_TaskIdGetGeneration(blocking_task_id);
+    pal_uint32_t   state_tag = blocking_task->StateTag;
+    PAL_PERMITS_LIST **slots = blocking_task->Permits;
+    pal_uint32_t    data_num = PAL_TaskStateTagGetPermitsCount(state_tag);
+    pal_uint32_t    data_gen = PAL_TaskStateTagGetGeneration(state_tag);
+    pal_uint32_t     new_tag;
+    pal_uint32_t       value;
+
+    _ReadWriteBarrier(); /* load-acquire for blocking_task->StateTag */
+
+    for ( ; ; ) {
+        if (task_gen == data_gen && data_num <= PAL_TASK_STATE_TAG_MAX_PERMITS_LISTS) {
+            /* write to the next available slot index */
+            slots[data_num] = permits_list;
+            new_tag = PAL_TaskStateTagUpdatePermitsCount(state_tag, data_num+1);
+            /* attempt to update and 'claim' the slot */
+            /* this races with the following operations:
+             * 1. A concurrent PAL_TaskDataPublishPermitsList to blocking_task_id from another thread. This operation claims a slot in the Permits array and updates the permit count of StateTag.
+             * 2. A concurrent final completion of blocking_task_id on another thread. This operation claims the Permits array and updates the generation of StateTag.
+             * 3. A concurrent cancellation of blocking_task_id on another thread. This operation sets the cancel bit of StateTag.
+             */
+            if ((value =(pal_uint32_t)_InterlockedCompareExchange((volatile LONG*)&blocking_task->StateTag, (LONG) new_tag, (LONG) state_tag)) == state_tag) {
+                /* the permits list was successfully published */
+                return 1;
+            }
+            /* the blocking_task->StateTag was updated - try again */
+            data_num  = PAL_TaskStateTagGetPermitsCount(value);
+            data_gen  = PAL_TaskStateTagGetGeneration(value);
+            state_tag = value;
+        } else {
+            /* the generations differ - blocking_task_id has already completed */
+            /* if the following assert fires, that means that the task structure 
+             * needs to be examined - there are too many tasks depending on the 
+             * completion of blocking_task_id. if possible, batch-publish tasks. */
+            assert(data_num <= PAL_TASK_STATE_TAG_MAX_PERMITS_LISTS);
+            return 0;
+        }
     }
 }
 
@@ -194,7 +506,7 @@ PAL_TaskPoolPushReadyTask
     struct PAL_TASK_POOL *worker_pool,
     PAL_TASKID                task_id
 )
-{
+{   /* TODO: make this a push(N) operation */
     PAL_TASKID  *stor = worker_pool->ReadyTaskIds;
     pal_sint64_t mask = PAL_TASKID_MAX_SLOTS_PER_POOL - 1;
     pal_sint64_t  pos = worker_pool->ReadyPrivatePos;
@@ -236,7 +548,7 @@ PAL_TaskPoolTakeReadyTask
             return res;
         } else {
             /* this thread lost the race */
-            worker_pool->ReadyPrivatePos = top+ 1;
+            worker_pool->ReadyPrivatePos = top + 1;
             return PAL_TASKID_NONE;
         }
     } else {
@@ -707,10 +1019,12 @@ PAL_TaskPoolQueryMemorySize
     udata_offset  = reserve_size;
     reserve_size  = PAL_AlignUp(reserve_size , page_size); /* user data */
     udata_size    = reserve_size - udata_offset;
-    reserve_size += PAL_AllocationSizeArray(pal_uint32_t , PAL_TASKID_MAX_SLOTS_PER_POOL); /* AllocSlotIds */
-    reserve_size += PAL_AllocationSizeArray(PAL_TASKID   , PAL_TASKID_MAX_SLOTS_PER_POOL); /* ReadyTaskIds */
+    reserve_size += PAL_AllocationSizeArray(pal_uint32_t    , PAL_TASKID_MAX_SLOTS_PER_POOL); /* PermitSlotIds */
+    reserve_size += PAL_AllocationSizeArray(pal_uint32_t    , PAL_TASKID_MAX_SLOTS_PER_POOL); /* AllocSlotIds  */
+    reserve_size += PAL_AllocationSizeArray(PAL_TASKID      , PAL_TASKID_MAX_SLOTS_PER_POOL); /* ReadyTaskIds  */
     commit_size   = reserve_size;
-    reserve_size += PAL_AllocationSizeArray(PAL_TASK_DATA, PAL_TASKID_MAX_SLOTS_PER_POOL); /* TaskSlotData */
+    reserve_size += PAL_AllocationSizeArray(PAL_PERMITS_LIST, PAL_TASKID_MAX_SLOTS_PER_POOL); /* PermitListData */
+    reserve_size += PAL_AllocationSizeArray(PAL_TASK_DATA   , PAL_TASKID_MAX_SLOTS_PER_POOL); /* TaskSlotData */
     reserve_size  = PAL_AlignUp(reserve_size , page_size); /* pools are page-aligned */
     pool_size->ReserveSize    = reserve_size;
     pool_size->CommitSize     = commit_size;
@@ -901,7 +1215,7 @@ PAL_TaskSchedulerCreate
     /* initialize the task pools */
     for (type_index = 0, type_count = init->PoolTypeCount; type_index < type_count; ++type_index) {
         PAL_TASK_POOL_INIT    *type =&init->TaskPoolTypes [type_index];
-        pal_uint32_t     chunk_size = PAL_TASK_CHUNK_SIZE;
+        pal_uint32_t     chunk_size = PAL_TASK_DATA_CHUNK_SIZE;
         pal_uint32_t    chunk_count =(type->PreCommitTasks + (chunk_size-1)) / chunk_size;
         pal_usize_t     commit_size = pool_size.CommitSize;
 
@@ -945,26 +1259,29 @@ PAL_TaskSchedulerCreate
              * note that the order of allocations here matter. */
             pool = PAL_MemoryArenaAllocateHostType(&pool_arena, PAL_TASK_POOL);
             pool->TaskScheduler     = scheduler;
-            pool->NextFreePool      = scheduler->PoolFreeList[type_index].FreeListHead;
-            pool->UserDataBuffer    = PAL_MemoryArenaAllocateHostArray(&pool_arena, pal_uint8_t  , pool_size.UserDataSize);
-            pool->AllocSlotIds      = PAL_MemoryArenaAllocateHostArray(&pool_arena, pal_uint32_t , PAL_TASKID_MAX_SLOTS_PER_POOL);
-            pool->ReadyTaskIds      = PAL_MemoryArenaAllocateHostArray(&pool_arena, PAL_TASKID   , PAL_TASKID_MAX_SLOTS_PER_POOL);
-            pool->TaskSlotData      = PAL_MemoryArenaAllocateHostArray(&pool_arena, PAL_TASK_DATA, chunk_size * chunk_count);
+            pool->UserDataBuffer    = PAL_MemoryArenaAllocateHostArray(&pool_arena, pal_uint8_t     , pool_size.UserDataSize);
+            pool->PermitSlotIds     = PAL_MemoryArenaAllocateHostArray(&pool_arena, pal_uint32_t    , PAL_TASKID_MAX_SLOTS_PER_POOL);
+            pool->AllocSlotIds      = PAL_MemoryArenaAllocateHostArray(&pool_arena, pal_uint32_t    , PAL_TASKID_MAX_SLOTS_PER_POOL);
+            pool->ReadyTaskIds      = PAL_MemoryArenaAllocateHostArray(&pool_arena, PAL_TASKID      , PAL_TASKID_MAX_SLOTS_PER_POOL);
+            pool->TaskSlotData      = PAL_MemoryArenaAllocateHostArray(&pool_arena, PAL_TASK_DATA   , chunk_size * chunk_count);
+            pool->PermitListData    = PAL_MemoryArenaAllocateHostArray(&pool_arena, PAL_PERMITS_LIST, PAL_TASKID_MAX_SLOTS_PER_POOL);
             pool->ParkSemaphore     = NULL;
-            pool->OsThreadId        = 0;
-            pool->PoolTypeId        = type->PoolTypeId;
             pool->PoolIndex         = global_pool_index;
             pool->PoolFlags         = type->PoolFlags;
+            pool->TaskPoolList      = scheduler->TaskPoolList;
+            pool->NextFreePool      = scheduler->PoolFreeList[type_index].FreeListHead;
+            pool->MaxTaskSlots      = chunk_count * chunk_size;
+            pool->MaxPermitLists    = 0; /* none pre-committed */
+            pool->SlotAllocNext     = 0;
+            pool->PermitAllocNext   = 0;
             pool->UserDataSize      = pool_size.UserDataSize;
             pool->WakeupTaskId      = PAL_TASKID_NONE;
-            pool->TaskPoolList      = scheduler->TaskPoolList;
-            pool->Reserved1         = 0;
-            pool->Reserved2         = 0;
-            pool->Reserved3         = 0;
-            pool->CommitCount       = chunk_count;
-            pool->AllocCount        = 0;
-            pool->AllocNext         = 0;
-            pool->FreeCount         = chunk_count * chunk_size;
+            pool->OsThreadId        = 0;
+            pool->PoolTypeId        = type->PoolTypeId;
+            pool->SlotAllocCount    = 0;
+            pool->PermitAllocCount  = 0;
+            pool->SlotFreeCount     = chunk_count * chunk_size;
+            pool->PermitFreeCount   = 0;
             pool->ReadyPublicPos    = 0;
             pool->ReadyPrivatePos   = 0;
             /* update the scheduler pool binding table */
@@ -1096,7 +1413,6 @@ PAL_TaskSchedulerAcquireTaskPool
     PAL_TASK_POOL_FREE_LIST *free_list = NULL;
     PAL_TASK_POOL           *task_pool = NULL;
     pal_sint32_t const   *type_id_list = scheduler->PoolTypeIds;
-    pal_uint32_t            free_count = 0;
     pal_uint32_t                  i, n;
 
     for (i = 0, n = scheduler->PoolTypeCount; i < n; ++i) {
@@ -1117,8 +1433,10 @@ PAL_TaskSchedulerAcquireTaskPool
     } ReleaseSRWLockExclusive(&free_list->TypeLock);
 
     if (task_pool != NULL) {
-        PAL_TASK_DATA *task_data = task_pool->TaskSlotData;
-        pal_uint32_t   *slot_ids = task_pool->AllocSlotIds;
+        PAL_PERMITS_LIST *permit_data = task_pool->PermitListData;
+        PAL_TASK_DATA      *task_data = task_pool->TaskSlotData;
+        pal_uint32_t   *data_slot_ids = task_pool->AllocSlotIds;
+        pal_uint32_t *permit_slot_ids = task_pool->PermitSlotIds;
 
         if ((bind_flags & PAL_TASK_POOL_BIND_FLAG_MANUAL) == 0) {
             PAL_TaskSchedulerBindPoolToThread(scheduler, task_pool, GetCurrentThreadId());
@@ -1126,20 +1444,28 @@ PAL_TaskSchedulerAcquireTaskPool
             task_pool->OsThreadId = 0;
         }
 
-        /* initialize all of the task state and free lists */
-        free_count   = task_pool->CommitCount * PAL_TASK_CHUNK_SIZE;
-        PAL_ZeroMemory(task_data , free_count * sizeof(PAL_TASK_DATA));
-        for (i = 0; i < free_count; ++i) {
-            slot_ids[i] = PAL_TaskSlotPack(i, 0);
+        /* initialize all of the task state and free lists.
+         * note that this is potentially zeroing megabytes of memory.
+         */
+        PAL_ZeroMemory(task_data, task_pool->MaxTaskSlots * sizeof(PAL_TASK_DATA));
+        for (i = 0, n = task_pool->MaxTaskSlots; i < n; ++i) {
+            data_slot_ids[i] = PAL_TaskSlotPack (i , 0);
+        }
+        PAL_ZeroMemory(permit_data, task_pool->MaxPermitLists * sizeof(PAL_PERMITS_LIST));
+        for (i = 0, n = task_pool->MaxPermitLists; i < n; ++i) {
+            permit_slot_ids[i] = i;
         }
 
         /* initialize the queues and counters */
-        task_pool->WakeupTaskId    = PAL_TASKID_NONE;
-        task_pool->AllocCount      = 0;
-        task_pool->AllocNext       = 0;
-        task_pool->ReadyPublicPos  = 0;
-        task_pool->ReadyPrivatePos = 0;
-       _InterlockedExchange64((volatile LONGLONG*) &task_pool->FreeCount, (LONGLONG) free_count);
+        task_pool->SlotAllocNext    = 0;
+        task_pool->PermitAllocNext  = 0;
+        task_pool->WakeupTaskId     = PAL_TASKID_NONE;
+        task_pool->SlotAllocCount   = 0;
+        task_pool->PermitAllocCount = 0;
+        task_pool->ReadyPublicPos   = 0;
+        task_pool->ReadyPrivatePos  = 0;
+       _InterlockedExchange64((volatile LONGLONG*) &task_pool->SlotFreeCount  , (LONGLONG) task_pool->MaxTaskSlots);
+       _InterlockedExchange64((volatile LONGLONG*) &task_pool->PermitFreeCount, (LONGLONG) task_pool->MaxPermitLists);
     }
     return task_pool;
 }
@@ -1195,14 +1521,15 @@ PAL_TaskCreate
 (
     struct PAL_TASK_POOL *thread_pool,
     PAL_TASKID          *task_id_list,
-    pal_uint32_t           task_count
+    pal_uint32_t           task_count, 
+    PAL_TASKID            parent_task
 )
 {
     pal_uint32_t write_index = 0;
     pal_uint32_t  pool_index = thread_pool->PoolIndex;
     pal_uint32_t  *slot_list = thread_pool->AllocSlotIds;
-    pal_uint64_t   alloc_max = thread_pool->AllocCount;
-    pal_uint64_t   alloc_cur = thread_pool->AllocNext;
+    pal_uint64_t   alloc_max = thread_pool->SlotAllocCount;
+    pal_uint64_t   alloc_cur = thread_pool->SlotAllocNext;
     pal_uint32_t  slot_index;
     pal_uint32_t  generation;
     pal_uint32_t  freelist_v;
@@ -1211,13 +1538,12 @@ PAL_TaskCreate
         for ( ; ; ) {
             if (alloc_cur == alloc_max) {
                 /* refill the claimed set */
-                alloc_cur =(pal_uint64_t)_InterlockedExchange64((volatile LONGLONG*) &thread_pool->AllocCount, (LONGLONG) thread_pool->FreeCount);
-                alloc_max = thread_pool->AllocCount;
+                alloc_cur =(pal_uint64_t)_InterlockedExchange64((volatile LONGLONG*) &thread_pool->SlotAllocCount, (LONGLONG) thread_pool->SlotFreeCount);
+                alloc_max = thread_pool->SlotAllocCount;
                 if (alloc_cur == alloc_max) {
-                    /* if we can commit additional tasks, prefer that */
-                    if (thread_pool->CommitCount < PAL_TASK_CHUNK_COUNT) {
-                        /* TODO: commit an additional chunk of tasks */
-                        YieldProcessor();
+                    if (thread_pool->MaxTaskSlots < PAL_TASKID_MAX_SLOTS_PER_POOL) {
+                        /* commit one or more additional chunks of task data */
+                        PAL_TaskPoolCommitTaskDataChunks(thread_pool, task_count - write_index);
                     } else {
                         /* no choice but to wait for some work to finish and try again */
                         YieldProcessor();
@@ -1231,41 +1557,25 @@ PAL_TaskCreate
                 generation = PAL_TaskSlotGetSlotGeneration(freelist_v);
                 task_id_list[write_index++] = PAL_TaskIdPack(pool_index, slot_index, generation);
                 if (write_index == task_count) {
-                    thread_pool->AllocNext = alloc_cur;
-                    return 0;
+                    thread_pool->SlotAllocNext = alloc_cur;
+                    goto alloc_complete;
                 }
             }
         }
+
+alloc_complete:
+        if (parent_task != PAL_TASKID_NONE) {
+            /* increment the outstanding work counter on the parent task.
+             * the caller must still use PAL_TaskGetData to set the ParentId field for each child. */
+            pal_uint32_t   parent_pool = PAL_TaskIdGetTaskPoolIndex(parent_task);
+            pal_uint32_t   parent_slot = PAL_TaskIdGetTaskSlotIndex(parent_task);
+            PAL_TASK_DATA *parent_data =&thread_pool->TaskPoolList [parent_pool]->TaskSlotData[parent_slot];
+            _InterlockedExchangeAdd((volatile LONG*) &parent_data->WorkCount, (LONG) task_count);
+        }
+        return  0;
     } else {
         /* attempt to allocate too many task IDs */
         return -1;
-    }
-}
-
-PAL_API(void)
-PAL_TaskDelete
-(
-    struct PAL_TASK_POOL *thread_pool,
-    PAL_TASKID                task_id
-)
-{
-    PAL_TASK_DATA  *task_data = NULL;
-    PAL_TASK_POOL  *task_pool = NULL;
-    PAL_TASK_POOL **pool_list = thread_pool->TaskPoolList;
-    pal_uint32_t   pool_index = PAL_TaskIdGetTaskPoolIndex(task_id);
-    pal_uint32_t   slot_index = PAL_TaskIdGetTaskSlotIndex(task_id);
-    pal_uint32_t   generation = PAL_TaskIdGetGeneration(task_id);
-    pal_uint32_t     next_gen =(generation + 1) & PAL_TASKID_GENER_MASK;
-
-    if (PAL_TaskIdGetValid(task_id)) {
-        task_pool = pool_list[pool_index];
-        task_data =&task_pool->TaskSlotData[slot_index];
-        if (generation == task_data->Generation) {
-            /* increment the generation to detect expired tasks */
-            task_data->Generation = next_gen;
-            /* return the slot index to the free pool */
-            PAL_TaskPoolMakeTaskSlotFree(task_pool, slot_index, next_gen);
-        }
     }
 }
 
@@ -1283,21 +1593,19 @@ PAL_TaskGetData
     PAL_TASK_POOL **pool_list = thread_pool->TaskPoolList;
     pal_uint32_t   pool_index = PAL_TaskIdGetTaskPoolIndex(task_id);
     pal_uint32_t   slot_index = PAL_TaskIdGetTaskSlotIndex(task_id);
-    pal_uint32_t   generation = PAL_TaskIdGetGeneration(task_id);
 
     if (PAL_TaskIdGetValid(task_id)) {
         task_pool = pool_list[pool_index];
         task_data =&task_pool->TaskSlotData[slot_index];
-        if (generation == task_data->Generation) {
-            PAL_Assign(argument_data     , task_data->Arguments);
-            PAL_Assign(argument_data_size, sizeof(task_data->Arguments));
-            return &task_data->PublicData;
-        }
+        PAL_Assign(argument_data, task_data->Arguments);
+        PAL_Assign(argument_data_size, sizeof(task_data->Arguments));
+        return &task_data->PublicData;
+    } else {
+        /* the task identifier is invalid */
+        PAL_Assign(argument_data, NULL);
+        PAL_Assign(argument_data_size, 0);
+        return NULL;
     }
-    /* the task identifier is invalid */
-    PAL_Assign(argument_data, NULL);
-    PAL_Assign(argument_data_size, 0);
-    return NULL;
 }
 
 #if 0
