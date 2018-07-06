@@ -300,6 +300,8 @@ PAL_TaskSchedulerBindPoolToThread
  * @param thread_pool The PAL_TASK_POOL bound to the thread calling PAL_TaskCreate.
  * @param task_id_list The array that will store the generated task ID(s).
  * @param task_count The number of tasks to create.
+ * @param parent_task The identifier of the parent task for all generated task ID(s), or PAL_TASKID_NONE.
+ * Specifying a task ID here only increments the work count for the parent task. The PAL_TASK::ParentId field must still be set by the application.
  * @return Zero if all task_count items in task_list are successfully initialized, or non-zero if an error occurred.
  */
 PAL_API(int)
@@ -307,21 +309,8 @@ PAL_TaskCreate
 (
     struct PAL_TASK_POOL *thread_pool, 
     PAL_TASKID          *task_id_list, 
-    pal_uint32_t           task_count
-);
-
-/* @summary Delete a single task after it has finished executing. 
- * Application code does not have to delete tasks explicitly; they are deleted automatically upon completion.
- * After deletion, the task ID is invalidated and will not be recognized as a valid task.
- * Batch deletion is not supported since a thread can only execute a single task at a time.
- * @param thread_pool The PAL_TASK_POOL bound to the thread calling PAL_TaskDelete.
- * @param task_id The identifier of the task to delete.
- */
-PAL_API(void)
-PAL_TaskDelete
-(
-    struct PAL_TASK_POOL *thread_pool, 
-    PAL_TASKID                task_id
+    pal_uint32_t           task_count, 
+    PAL_TASKID            parent_task
 );
 
 /* @summary Retrieve the PAL_TASK data associated with a task identifier.
