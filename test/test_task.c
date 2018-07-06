@@ -210,6 +210,98 @@ DeleteTaskScheduler
     PAL_TaskSchedulerDelete(scheduler);
 }
 
+static int
+FTest_PermitListAllocFree
+(
+    struct PAL_MEMORY_ARENA  *global_arena, 
+    struct PAL_MEMORY_ARENA *scratch_arena
+)
+{   /* this test ensures that permit lists can be allocated and freed from the same thread, 
+     * and that if possible, the same chunk of permit lists is recycled.
+     */
+    pal_uint32_t const        LOOP_ITERS = PAL_PERMIT_LIST_CHUNK_SIZE / 16;
+    pal_uint32_t              list_index = 0;
+    PAL_TASK_SCHEDULER            *sched = NULL;
+    PAL_TASK_POOL             *main_pool = NULL;
+    PAL_PERMITS_LIST          *lists[16];
+    PAL_MEMORY_ARENA_MARKER  global_mark;
+    PAL_MEMORY_ARENA_MARKER scratch_mark;
+    pal_uint32_t              i, j, n, x;
+    int                           result;
+
+    result       = TEST_PASS;
+    global_mark  = PAL_MemoryArenaMark(global_arena);
+    scratch_mark = PAL_MemoryArenaMark(scratch_arena);
+
+    if ((sched = CreateTaskScheduler(FORCE_SINGLE_CORE, 0)) == NULL) {
+        assert(0 && "CreateTaskScheduler failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    if ((main_pool = PAL_TaskSchedulerAcquireTaskPool(sched, PAL_TASK_POOL_TYPE_ID_MAIN, 0)) == NULL) {
+        assert(0 && "PAL_TaskSchedulerAcquireTaskPool(MAIN) failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    for (x = 0; x < 1000; ++x) {
+        /* pass 1 allocates a chunk and fills it */
+        for (i = 0; i < LOOP_ITERS; ++i) {
+            if (PAL_TaskPoolAllocatePermitsLists(main_pool, lists, PAL_CountOf(lists)) != 0) {
+                assert(0 && "PAL_TaskPoolAllocatePermitsLists failed");
+                result = TEST_FAIL;
+                goto cleanup;
+            }
+            /* set a piece of data uniquely identifying the list */
+            for (j = 0 , n = PAL_CountOf(lists); j < n; ++j) {
+                if (lists[j] == NULL) {
+                    assert(lists[j] != NULL);
+                    result = TEST_FAIL;
+                    goto cleanup;
+                }
+                lists[j]->PoolIndex = (i * 16) + j;
+            }
+            /* delete each permits list, returning it to the free pool */
+            for (j = 0 , n = PAL_CountOf(lists); j < n; ++j) {
+                list_index = PAL_TaskPoolGetSlotIndexForPermitList(main_pool, lists[j]);
+                PAL_TaskPoolMakePermitsListFree(main_pool, list_index);
+            }
+        }
+        /* pass 2 allocates the same chunk and verifies it */
+        for (i = 0; i < LOOP_ITERS; ++i) {
+            if (PAL_TaskPoolAllocatePermitsLists(main_pool, lists, PAL_CountOf(lists)) != 0) {
+                assert(0 && "PAL_TaskPoolAllocatePermitsLists failed");
+                result = TEST_FAIL;
+                goto cleanup;
+            }
+            /* set a piece of data uniquely identifying the list */
+            for (j = 0 , n = PAL_CountOf(lists); j < n; ++j) {
+                if (lists[j] == NULL) {
+                    assert(lists[j] != NULL);
+                    result = TEST_FAIL;
+                    goto cleanup;
+                }
+                if (lists[j]->PoolIndex != ((i * 16) + j)) {
+                    assert(list[j]->PoolIndex == ((i * 16) + j) && "Permit Lists not recycled in expected order");
+                    result = TEST_FAIL;
+                    goto cleanup;
+                }
+            }
+            /* delete each permits list, returning it to the free pool */
+            for (j = 0 , n = PAL_CountOf(lists); j < n; ++j) {
+                list_index = PAL_TaskPoolGetSlotIndexForPermitList(main_pool, lists[j]);
+                PAL_TaskPoolMakePermitsListFree(main_pool, list_index);
+            }
+        }
+    }
+
+cleanup:
+    DeleteTaskScheduler(sched);
+    PAL_MemoryArenaResetToMarker(scratch_arena, scratch_mark);
+    PAL_MemoryArenaResetToMarker(global_arena, global_mark);
+    return result;
+}
+
 int main
 (
     int    argc, 
@@ -228,9 +320,7 @@ int main
     pal_usize_t                  global_size = Megabytes(16);
     pal_usize_t                 scratch_size = Kilobytes(128);
 
-#if 0
     int                                  res;
-#endif
 
     PAL_UNUSED_ARG(argc);
     PAL_UNUSED_ARG(argv);
@@ -285,9 +375,7 @@ int main
 #endif
 
     /* execute functional tests */
-#if 0
-    res = FTest_SPSCQueue_u32_PushTakeIsFIFO          (&global_arena, &scratch_arena); printf("FTest_SPSCQueue_u32_PushTakeIsFIFO          : %d\r\n", res);
-#endif
+    res = FTest_PermitListAllocFree(&global_arena, &scratch_arena); printf("FTest_PermitListAllocFree: %d\r\n", res);
 
 cleanup_and_exit:
     PAL_HostMemoryRelease(&scratch_alloc);
