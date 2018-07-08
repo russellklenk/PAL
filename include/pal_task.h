@@ -352,6 +352,19 @@ PAL_TaskPublish
     pal_uint32_t     dependency_count
 );
 
+/* @summary Indicate that a task has completed.
+ * Automatically-completed tasks do not need to call this function.
+ * This function should be called on the same thread that completed the task.
+ * @param thread_pool The PAL_TASK_POOL bound to the thread that completed the task.
+ * @param completed_task The identifier of the completed task.
+ */
+PAL_API(void)
+PAL_TaskComplete
+(
+    struct PAL_TASK_POOL *thread_pool, 
+    PAL_TASKID         completed_task
+);
+
 #ifdef __cplusplus
 }; /* extern "C" */
 #endif

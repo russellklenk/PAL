@@ -588,51 +588,6 @@ PAL_TaskPoolStealReadyTask
     return PAL_TASKID_NONE;
 }
 
-static void
-PAL_TaskPoolCompleteTask
-(
-    struct PAL_TASK_SCHEDULER  *scheduler,
-    struct PAL_TASK_POOL *completion_pool,
-    struct PAL_TASK_POOL      *owner_pool,
-    struct PAL_TASK_DATA       *task_data,
-    pal_uint32_t               pool_index,
-    pal_uint32_t               slot_index,
-    pal_uint32_t               generation
-)
-{
-    PAL_UNUSED_ARG(scheduler);
-    PAL_UNUSED_ARG(completion_pool);
-    PAL_UNUSED_ARG(owner_pool);
-    PAL_UNUSED_ARG(task_data);
-    PAL_UNUSED_ARG(pool_index);
-    PAL_UNUSED_ARG(slot_index);
-    PAL_UNUSED_ARG(generation);
-#if 0
-    PAL_TASK_POOL **pool_list = scheduler->TaskPoolList;
-    PAL_TASKID   *permit_list = task_data->PermitTasks;
-    pal_uint32_t  ready_count = 0;
-    pal_sint32_t   work_count;
-    pal_sint32_t permit_count;
-    PAL_TASKID ready_list[15];  /* limited by the size of the permit list */
-    pal_sint32_t            i;
-
-    if ((work_count = _InterlockedExchangeAdd((volatile LONG*)&task_data->WorkCount, -1)) == 1) {
-        /* the task and all of its child tasks have completed */
-        for (i = 0, permit_count = _InterlockedExchange((volatile LONG*)&task_data->PermitCount, -1); i < permit_count; ++i) {
-        }
-        if (ready_count > 0) {
-            /* flush tasks that are now ready-to-run.
-             * wake worker or add to queue for completion_pool. */
-        }
-        if (task_data->PublicData.ParentId != PAL_TASKID_NONE) {
-            /* TODO: bubble completion up to the parent task */
-        }
-        /* TODO: should mark slot free? or require explicit delete? */
-        PAL_TaskPoolMakeTaskSlotFree(owner_pool, slot_index, (generation+1) & PAL_TASKID_GENER_MASK);
-    }
-#endif
-}
-
 /* @summary Attempt to park (put to sleep) a worker thread.
  * Worker threads are only put into a wait state when there's no work available.
  * This function should be called when a worker runs out of work in its local ready-to-run queue.
@@ -789,6 +744,81 @@ PAL_TaskSchedulerStealWork
     return PAL_TASKID_NONE;
 }
 
+/* @summary Register completion of a task. This may make additional tasks ready to run.
+ * @param scheduler The PAL_TASK_SCHEDULER responsible for managing work within the system.
+ * @param completion_pool The PAL_TASK_POOL bound to the thread that completed the task.
+ * @param owner_pool The PAL_TASK_POOL bound to the thread that created the task.
+ * @param task_data The PAL_TASK_DATA associated with the completed task.
+ * @param slot_index The zero-based index of the task data slot associated with the completed task.
+ * @param generation The generation value of the task data slot associated with the completed task.
+ */
+static void
+PAL_TaskPoolCompleteTask
+(
+    struct PAL_TASK_SCHEDULER  *scheduler,
+    struct PAL_TASK_POOL *completion_pool,
+    struct PAL_TASK_POOL      *owner_pool,
+    struct PAL_TASK_DATA       *task_data,
+    pal_uint32_t               slot_index,
+    pal_uint32_t               generation
+)
+{
+    if (_InterlockedDecrement((volatile LONG*)&task_data->WorkCount) == 0) {
+        /* this task should transition to the completed state.
+         * no other thread can process the completion, but this thread may have 
+         * to race other threads that might be updating the task permits.
+         * the state tag for a completed task clears the cancellation bit, 
+         * sets the number of permits to zero, and increments the generation.
+         */
+        pal_uint32_t     new_gen =(generation + 1) & PAL_TASK_STATE_TAG_GENER_MASK;
+        pal_uint32_t    done_tag = new_gen << PAL_TASK_STATE_TAG_GENER_SHIFT;
+        pal_uint32_t   state_tag = task_data->StateTag;
+        pal_uint32_t num_permits;
+        pal_uint32_t       value;
+        pal_uint32_t        i, j;
+        PAL_TASKID   parent_task;
+        
+        _ReadWriteBarrier();
+        
+        for ( ; ; ) {
+            /* since we have the task data, reset the work count for when this slot is reused */
+            task_data->WorkCount = 1;
+            /* atomically update the state tag, which transitions the task state to completed */
+            if ((value =(pal_uint32_t)_InterlockedCompareExchange((volatile LONG*)&task_data->StateTag, (LONG) done_tag, (LONG) state_tag)) == state_tag) {
+                /* the task is transitioned to the completed state */
+                break;
+            }
+            /* another thread attempted to modify the task state - try again */
+            state_tag = value;
+        }
+
+        if ((parent_task = task_data->PublicData.ParentId) != PAL_TASKID_NONE) {
+            /* bubble completion up to the parent task */
+            pal_uint32_t   parent_pidx = PAL_TaskIdGetTaskPoolIndex(parent_task);
+            pal_uint32_t   parent_slot = PAL_TaskIdGetTaskSlotIndex(parent_task);
+            pal_uint32_t   parent_genr = PAL_TaskIdGetGeneration(parent_task);
+            PAL_TASK_POOL *parent_pool = scheduler->TaskPoolList[parent_pidx];
+            PAL_TASK_DATA *parent_data =&scheduler->TaskPoolList[parent_pidx]->TaskSlotData[parent_slot];
+            PAL_TaskPoolCompleteTask(scheduler, completion_pool, parent_pool,  parent_data, parent_slot, parent_genr);
+        }
+
+        for (i = 0, num_permits = PAL_TaskStateTagGetPermitsCount(state_tag); i < num_permits; ++i) {
+            PAL_PERMITS_LIST *p = task_data->Permits[i];
+            if (_InterlockedIncrement((volatile LONG*)&p->WaitCount) == 0) {
+                /* all tasks in p->TaskList are now ready-to-run */
+                PAL_TASK_POOL *permit_owner = scheduler->TaskPoolList[p->PoolIndex];
+                pal_uint32_t   permit_index = PAL_TaskPoolGetSlotIndexForPermitList(permit_owner, p);
+                for (j = 0; p->TaskList[j] != PAL_TASKID_NONE; ++j) {
+                    PAL_TaskSchedulerWakeWorker(scheduler, completion_pool, p->TaskList[j]);
+                }
+                PAL_TaskPoolMakePermitsListFree(permit_owner, permit_index);
+            }
+        }
+        /* allow the task data slot to be reused */
+        PAL_TaskPoolMakeTaskSlotFree(owner_pool, slot_index, new_gen);
+    }
+}
+
 /* @summary Implement the entry point for a worker thread that processes primarily non-blocking work.
  * @param argp A pointer to a PAL_CPU_WORKER_THREAD_INIT structure.
  * The data pointed to is valid only until the thread signals the Ready or Error event.
@@ -875,7 +905,7 @@ PAL_CpuWorkerThreadMain
                 task_args.TaskId = current_task;
                 task_data->PublicData.TaskMain(&task_args);
                 if (task_data->PublicData.CompletionType == PAL_TASK_COMPLETION_TYPE_AUTOMATIC) {
-                    /* TODO: PAL_TaskComplete */
+                    PAL_TaskPoolCompleteTask(scheduler, thread_pool, pool_list[pool_index], task_data, slot_index, generation);
                 }
 
                 /* executing the task may have produced one or more additional
@@ -1608,6 +1638,73 @@ PAL_TaskGetData
     }
 }
 
+PAL_API(int)
+PAL_TaskPublish
+(
+    struct PAL_TASK_POOL *thread_pool, 
+    PAL_TASKID          *task_id_list, 
+    pal_uint32_t           task_count, 
+    PAL_TASKID       *dependency_list, 
+    pal_uint32_t     dependency_count
+)
+{
+    PAL_TASK_SCHEDULER *scheduler = thread_pool->TaskScheduler;
+    pal_uint32_t             i, j;
+
+    if (dependency_count == 0) {
+        /* these tasks are immediately ready-to-run */
+        for (i = 0; i < task_count; ++i) {
+            PAL_TaskSchedulerWakeWorker(scheduler, thread_pool, task_id_list[i]);
+        }
+    } else {
+        /* allocate a permits list from thread_pool */
+        pal_uint32_t      pool_index = thread_pool->PoolIndex;
+        pal_uint32_t      wait_count = 0;
+        pal_uint32_t      list_count;
+        PAL_PERMITS_LIST *list_array[16];
+
+        list_count = (dependency_count + 29) / 30;
+        PAL_TaskPoolAllocatePermitsLists(thread_pool, list_array, list_count);
+        /* TODO: make this code work for multiple lists */
+        for (i = 0; i < list_count; ++i) {
+            list_array[i]->WaitCount =-(pal_sint32_t) dependency_count;
+            list_array[i]->PoolIndex =  pool_index;
+            PAL_CopyMemory(list_array[i]->TaskList, task_id_list, task_count);
+        }
+
+        /* publish each permits list to each blocking task */
+        for (i = 0; i < dependency_count; ++i) {
+            pal_uint32_t   blocking_pidx = PAL_TaskIdGetTaskPoolIndex(dependency_list[i]);
+            pal_uint32_t   blocking_sidx = PAL_TaskIdGetTaskSlotIndex(dependency_list[i]);
+            PAL_TASK_DATA *blocking_task =&scheduler->TaskPoolList[blocking_pidx]->TaskSlotData[blocking_sidx];
+            for (j = 0; j < list_count; ++j) {
+                wait_count += PAL_TaskDataPublishPermitsList(blocking_task, list_array[j], dependency_list[i]);
+            }
+        }
+
+        if (wait_count == 0) {
+            /* all dependencies completed */
+            for (i = 0; i < task_count; ++i) {
+                PAL_TaskSchedulerWakeWorker(scheduler, thread_pool, task_id_list[i]);
+            }
+        }
+    }
+    return 0;
+}
+
+#if 0
+PAL_API(void)
+PAL_TaskComplete
+(
+    struct PAL_TASK_POOL *thread_pool, 
+    PAL_TASKID         completed_task
+)
+{
+    PAL_TASK_SCHEDULER *scheduler = thread_pool->TaskScheduler;
+    pal_uint32_t      
+}
+#endif
+
 #if 0
 static int
 PAL_TaskSchedulerWakeWorker /* to be called when a worker makes a task ready-to-run via publish or complete */
@@ -1698,3 +1795,4 @@ park_thread:
      * to indicate that it should attempt to steal from the listed pools. */
 }
 #endif
+
