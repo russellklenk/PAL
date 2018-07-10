@@ -51,6 +51,27 @@
 #define PRINT_CONFIGURATION  1
 #endif
 
+/* @summary Data associated with simple no-op tasks that set a flag value.
+ */
+typedef struct FLAG_TASK_DATA {
+    pal_uint32_t          Magic;   /* The test setup can specify a bit pattern here. */
+    pal_sint32_t volatile Flag;    /* Initialized to zero by test setup, set to 1 by task main. */
+} FLAG_TASK_DATA;
+
+/* @summary Define the entry point for a task that sets FLAG_TASK_DATA::Flag to 1.
+ * The task should be created as an auto-completion task.
+ * @param args Data associated with task execution. TaskArguments points to a FLAG_TASK_DATA.
+ */
+static void
+FinishTaskMain_Auto
+(
+    struct PAL_TASK_ARGS *args
+)
+{
+    FLAG_TASK_DATA *argp =(FLAG_TASK_DATA*) args->TaskArguments;
+    argp->Flag = 1;
+}
+
 /* @summary Define the the callback function invoked to perform initialization for a task system asynchronous I/O worker thread.
  * The callback should allocate any per-thread data it needs and return a pointer to that data in the out_thread_context parameter.
  * @param task_scheduler The task scheduler that owns the worker thread.
@@ -282,7 +303,7 @@ FTest_PermitListAllocFree
                     goto cleanup;
                 }
                 if (lists[j]->PoolIndex != ((i * 16) + j)) {
-                    assert(list[j]->PoolIndex == ((i * 16) + j) && "Permit Lists not recycled in expected order");
+                    assert(lists[j]->PoolIndex == ((i * 16) + j) && "Permit Lists not recycled in expected order");
                     result = TEST_FAIL;
                     goto cleanup;
                 }
@@ -294,6 +315,114 @@ FTest_PermitListAllocFree
             }
         }
     }
+
+cleanup:
+    DeleteTaskScheduler(sched);
+    PAL_MemoryArenaResetToMarker(scratch_arena, scratch_mark);
+    PAL_MemoryArenaResetToMarker(global_arena, global_mark);
+    return result;
+}
+
+static int
+FTest_RunOneTask_NoDeps_Auto
+(
+    struct PAL_MEMORY_ARENA  *global_arena, 
+    struct PAL_MEMORY_ARENA *scratch_arena
+)
+{   /* this test exercises the lifecycle of a single task.
+     */
+    FLAG_TASK_DATA            *task_args = NULL;
+    PAL_TASK                       *task = NULL;
+    PAL_TASK_SCHEDULER            *sched = NULL;
+    PAL_TASK_POOL             *main_pool = NULL;
+    PAL_MEMORY_ARENA_MARKER  global_mark;
+    PAL_MEMORY_ARENA_MARKER scratch_mark;
+    pal_usize_t           task_args_size;
+    PAL_TASKID                   task_id;
+    int                           result;
+
+    result       = TEST_PASS;
+    global_mark  = PAL_MemoryArenaMark(global_arena);
+    scratch_mark = PAL_MemoryArenaMark(scratch_arena);
+
+    if ((sched = CreateTaskScheduler(FORCE_SINGLE_CORE, 0)) == NULL) {
+        assert(0 && "CreateTaskScheduler failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    if ((main_pool = PAL_TaskSchedulerAcquireTaskPool(sched, PAL_TASK_POOL_TYPE_ID_MAIN, 0)) == NULL) {
+        assert(0 && "PAL_TaskSchedulerAcquireTaskPool(MAIN) failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    /* step 1 is to create a task ID */
+    if (PAL_TaskCreate(main_pool, &task_id, 1, PAL_TASKID_NONE) != 0) {
+        assert(0 && "PAL_TaskCreate failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    if (PAL_TaskIdGetValid(task_id) == 0) {
+        assert(0 && "PAL_TaskCreate returned an invalid task ID");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    /* step 2 performs task setup.
+     * PAL_TaskGetData returns three pieces of information to you:
+     * 1. A pointer to the PAL_TASK, which you must fill out.
+     * 2. A pointer to the task-local data buffer, which you can use to specify per-task data.
+     * 3. The maximum number of bytes that can be written to the task-local data buffer.
+     */
+    if ((task = PAL_TaskGetData(main_pool, task_id, &task_args, &task_args_size)) == NULL) {
+        assert(0 && "PAL_TaskGetData failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    if (task_args == NULL || task_args_size == 0) {
+        assert(0 && "PAL_TaskGetData returned invalid task-local buffer");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    /* ALL fields of PAL_TASK must be set by your code.
+     * PAL_TASK::TaskMain specifies the function to run when the task executes.
+     * PAL_TASK::TaskId specifies the task identifier being assigned to the task.
+     * PAL_TASK::ParentId specifies the task identifier of the parent task. 
+     * The ParentId field is -not- set for you during PAL_TaskCreate; you must set it here.
+     * PAL_TASK::TaskFlags is reserved for future use and should be set to zero.
+     * PAL_TASK::CompletionType indicates how the task will be completed. Usually you set this 
+     * to PAL_TASK_COMPLETION_TYPE_AUTOMATIC, which means that the task system will automatically
+     * call PAL_TaskComplete after TaskMain returns. You can also set it to either one of 
+     * PAL_TASK_COMPLETION_TYPE_INTERNAL, which means that your TaskMain calls PAL_TaskComplete, 
+     * or PAL_TASK_COMPLETION_TYPE_EXTERNAL, which means that some callback outside of the task 
+     * system will call PAL_TaskComplete based on some event, such as an asynchronous I/O event.
+     */
+    task->TaskMain       = FinishTaskMain_Auto;
+    task->TaskId         = task_id;         /* must be the ID supplied to PAL_TaskGetData */
+    task->ParentId       = PAL_TASKID_NONE; /* must be the ID supplied as parent_id in PAL_TaskCreate */
+    task->TaskFlags      = 0;
+    task->CompletionType = PAL_TASK_COMPLETION_TYPE_AUTOMATIC;
+    task->Reserved       = 0;
+    task_args->Magic     = 0xabadbeef;
+    task_args->Flag      = 0;
+
+    /* step 3 publishes the task, which potentially makes the task ready-to-run.
+     * a task becomes ready-to-run once all of its dependencies have completed. 
+     * dependencies allow you to specify a general ordering in which tasks will 
+     * run; for example, if task A computes some data that task B uses, you would 
+     * make task B dependent on task A, which guarantees that task B will not start
+     * running before task A completes.
+     */
+    if (PAL_TaskPublish(main_pool, &task_id, 1, NULL, 0) != 0) {
+        assert(0 && "PAL_TaskPublish failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    while (task_args->Flag == 0) {
+        Sleep(10);
+    }
+    Sleep(100);
 
 cleanup:
     DeleteTaskScheduler(sched);
@@ -375,7 +504,8 @@ int main
 #endif
 
     /* execute functional tests */
-    res = FTest_PermitListAllocFree(&global_arena, &scratch_arena); printf("FTest_PermitListAllocFree: %d\r\n", res);
+    res = FTest_PermitListAllocFree   (&global_arena, &scratch_arena); printf("FTest_PermitListAllocFree   : %d\r\n", res);
+    res = FTest_RunOneTask_NoDeps_Auto(&global_arena, &scratch_arena); printf("FTest_RunOneTask_NoDeps_Auto: %d\r\n", res);
 
 cleanup_and_exit:
     PAL_HostMemoryRelease(&scratch_alloc);
