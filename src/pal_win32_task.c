@@ -617,6 +617,10 @@ PAL_TaskSchedulerParkWorker
     DWORD            wait_rc = WAIT_OBJECT_0;
     pal_uint32_t        i, n;
 
+    pal_uint32_t      *stack;
+    pal_sint32_t         tos;
+    pal_uint32_t       index;
+
     _ReadWriteBarrier();
     if (max_steal_list > 0) {
         do {
@@ -639,20 +643,29 @@ PAL_TaskSchedulerParkWorker
     return PAL_TASK_SCHEDULER_PARK_RESULT_TRY_STEAL;
 
 park_thread:
-    if ((wait_rc = WaitForSingleObject(worker_pool->ParkSemaphore, INFINITE)) == WAIT_OBJECT_0) {
-        if (scheduler->ShutdownSignal) {
-            /* woken due to shutdown */
-            PAL_Assign(num_steal_list, 0);
-            return PAL_TASK_SCHEDULER_PARK_RESULT_SHUTDOWN;
-        } else {
-            /* woken due to work item */
-            PAL_Assign(num_steal_list, 0);
-            return PAL_TASK_SCHEDULER_PARK_RESULT_WAKE_TASK;
+    index = worker_pool->PoolIndex;
+    stack = scheduler->ParkedPoolIds;
+    tos   = scheduler->ParkedPoolToS;
+    _ReadWriteBarrier(); /* load-acquire on ParkedPoolToS */
+    for ( ; ; ) {
+        stack[tos] = index;
+        if (( tos  =(pal_sint32_t)_InterlockedCompareExchange((volatile LONG*)&scheduler->ParkedPoolToS, tos+1, tos)) == tos) {
+            if ((wait_rc = WaitForSingleObject(worker_pool->ParkSemaphore, INFINITE)) == WAIT_OBJECT_0) {
+                if (scheduler->ShutdownSignal) {
+                    /* woken due to shutdown */
+                    PAL_Assign(num_steal_list, 0);
+                    return PAL_TASK_SCHEDULER_PARK_RESULT_SHUTDOWN;
+                } else {
+                    /* woken due to work item */
+                    PAL_Assign(num_steal_list, 0);
+                    return PAL_TASK_SCHEDULER_PARK_RESULT_WAKE_TASK;
+                }
+            } else {
+                /* some error occurred while waiting */
+                PAL_Assign(num_steal_list, 0);
+                return PAL_TASK_SCHEDULER_PARK_RESULT_SHUTDOWN;
+            }
         }
-    } else {
-        /* some error occurred while waiting */
-        PAL_Assign(num_steal_list, 0);
-        return PAL_TASK_SCHEDULER_PARK_RESULT_SHUTDOWN;
     }
 }
 
@@ -763,7 +776,7 @@ PAL_TaskPoolCompleteTask
     pal_uint32_t               generation
 )
 {
-    if (_InterlockedDecrement((volatile LONG*)&task_data->WorkCount) == 0) {
+    if (_InterlockedDecrement((volatile LONG*)&task_data->WorkCount) == -1) {
         /* this task should transition to the completed state.
          * no other thread can process the completion, but this thread may have 
          * to race other threads that might be updating the task permits.
@@ -782,7 +795,7 @@ PAL_TaskPoolCompleteTask
         
         for ( ; ; ) {
             /* since we have the task data, reset the work count for when this slot is reused */
-            task_data->WorkCount = 1;
+            task_data->WorkCount = 0;
             /* atomically update the state tag, which transitions the task state to completed */
             if ((value =(pal_uint32_t)_InterlockedCompareExchange((volatile LONG*)&task_data->StateTag, (LONG) done_tag, (LONG) state_tag)) == state_tag) {
                 /* the task is transitioned to the completed state */
@@ -1692,7 +1705,6 @@ PAL_TaskPublish
     return 0;
 }
 
-#if 0
 PAL_API(void)
 PAL_TaskComplete
 (
@@ -1701,9 +1713,14 @@ PAL_TaskComplete
 )
 {
     PAL_TASK_SCHEDULER *scheduler = thread_pool->TaskScheduler;
-    pal_uint32_t      
+    PAL_TASK_POOL     **pool_list = scheduler->TaskPoolList;
+    pal_uint32_t        task_pidx = PAL_TaskIdGetTaskPoolIndex(completed_task);
+    pal_uint32_t        task_slot = PAL_TaskIdGetTaskSlotIndex(completed_task);
+    pal_uint32_t       generation = PAL_TaskIdGetGeneration(completed_task);
+    PAL_TASK_POOL     *owner_pool = pool_list[task_pidx];
+    PAL_TASK_DATA      *task_data =&pool_list[task_pidx]->TaskSlotData[task_slot];
+    PAL_TaskPoolCompleteTask(scheduler, thread_pool, owner_pool, task_data, task_slot, generation);
 }
-#endif
 
 #if 0
 static int
