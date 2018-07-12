@@ -33,6 +33,7 @@
 #   define PAL_TASK_STATE_TAG_NPERM_MASK_PACKED   (PAL_TASK_STATE_TAG_NPERM_MASK << PAL_TASK_STATE_TAG_NPERM_SHIFT)
 #   define PAL_TASK_STATE_TAG_CANCL_MASK_PACKED   (PAL_TASK_STATE_TAG_CANCL_MASK << PAL_TASK_STATE_TAG_CANCL_SHIFT)
 #   define PAL_TASK_STATE_TAG_MAX_PERMITS_LISTS  ((1UL << PAL_TASK_STATE_TAG_NPERM_BITS) - 1)
+#   define PAL_TASK_MAX_PERMITS_PER_LIST           30
 #   define PAL_TASK_NOT_CANCELLED                  0
 #   define PAL_TASK_CANCELLED                      1
 #endif
@@ -496,7 +497,7 @@ PAL_TaskDataPublishPermitsList
 }
 
 /* @summary Push the task ID of a ready-to-run task onto the private end of the ready-to-run deque.
- * This thread can only be called by the thread that owns the supplied PAL_TASK_POOL.
+ * This function can only be called by the thread that owns the supplied PAL_TASK_POOL.
  * @param worker_pool The PAL_TASK_POOL bound to the thread that made the task ready-to-run.
  * @param task_id The identifier of the ready-to-run task.
  */
@@ -506,13 +507,39 @@ PAL_TaskPoolPushReadyTask
     struct PAL_TASK_POOL *worker_pool,
     PAL_TASKID                task_id
 )
-{   /* TODO: make this a push(N) operation */
+{
     PAL_TASKID  *stor = worker_pool->ReadyTaskIds;
     pal_sint64_t mask = PAL_TASKID_MAX_SLOTS_PER_POOL - 1;
     pal_sint64_t  pos = worker_pool->ReadyPrivatePos;
     stor[pos & mask]  = task_id;
     _ReadWriteBarrier();
     worker_pool->ReadyPrivatePos = pos + 1;
+}
+
+/* @summary Push one or more ready-to-run task IDs onto the private end of the ready-to-run deque.
+ * @param This function can only be called by the thread that owns the supplied task pool.
+ * @param worker_pool The PAL_TASK_POOL bound to the thread that made the task ready-to-run.
+ * @param task_list The list of task IDs that are ready-to-run.
+ * @param task_count The number of tasks in the task_list.
+ */
+static void
+PAL_TaskPoolPushReadyTaskMulti
+(
+    struct PAL_TASK_POOL *worker_pool, 
+    PAL_TASKID             *task_list, 
+    pal_uint32_t           task_count
+)
+{
+    PAL_TASKID  *stor = worker_pool->ReadyTaskIds;
+    pal_sint64_t mask = PAL_TASKID_MAX_SLOTS_PER_POOL - 1;
+    pal_sint64_t  pos = worker_pool->ReadyPrivatePos;
+    pal_sint64_t    p;
+    pal_uint32_t    i;
+    for (i = 0, p = pos; i < task_count; ++i, ++p) {
+        stor[p & mask] = task_list[i];
+    }
+    _ReadWriteBarrier();
+    worker_pool->ReadyPrivatePos = p;
 }
 
 /* @summary Attempt to take the task ID of a ready-to-run task from the private end of the ready-to-run deque.
@@ -712,6 +739,65 @@ PAL_TaskSchedulerWakeWorker /* to be called when a worker makes a task ready-to-
             tos = value;
         }
     }
+}
+
+/* @summary Potentially wake up one or more waiting threads to process ready-to-run tasks.
+ * If no workers are waiting, or more tasks are available than workers are waiting, tasks are queued for later processing.
+ * This function should be called when a thread makes one or more tasks ready-to-run via a publish or complete operation.
+ * This function performs at most (#workers + 2) atomic operations.
+ * @param scheduler The PAL_TASK_SCHEDULER managing the scheduler state.
+ * @param worker_pool The PAL_TASK_POOL owned by the calling thread, which executed the publish or complete operation.
+ * @param give_tasks The array of ready-to-run task identifiers.
+ * @param task_count The number of items in the give_tasks array. This value must be greater than zero.
+ * @return One of the values of the PAL_TASK_SCHEDULER_WAKE_RESULT enumeration.
+ */
+static pal_sint32_t
+PAL_TaskSchedulerWakeWorkerMulti
+(
+    struct PAL_TASK_SCHEDULER *scheduler, 
+    struct PAL_TASK_POOL    *worker_pool, 
+    PAL_TASKID               *give_tasks, 
+    pal_uint32_t              task_count
+)
+{
+    PAL_TASK_POOL **pools = scheduler->TaskPoolList;
+    pal_uint32_t   *stack = scheduler->ParkedPoolIds;
+    pal_sint32_t      tos = scheduler->ParkedPoolToS;
+    pal_uint32_t    n_pop = 0;
+    pal_uint32_t  n_given = 0;
+    pal_uint32_t  n_queue;
+    pal_sint32_t    value;
+    pal_uint32_t  pop[16];
+
+    _ReadWriteBarrier();
+
+    while (n_given < task_count) {
+        /* pop as many waiting threads as possible from park stack */
+        while (tos > 0 && n_pop < PAL_CountOf(pop) && (n_given + n_pop) < task_count) {
+            pop[n_pop] = stack[tos-1]; /* the park stack is non-empty, race to claim an item */
+            if ((value =(pal_sint32_t)_InterlockedCompareExchange((volatile LONG*)&scheduler->ParkedPoolToS, tos-1, tos)) == tos) {
+                n_pop++;
+            } else {
+                tos = value;
+            }
+        }
+        if (n_pop == 0) {
+            /* move the remaining tasks to the RTR queue */
+            n_queue = task_count - n_given;
+            PAL_TaskPoolPushReadyTaskMulti(worker_pool, &give_tasks[n_given], task_count-n_given);
+            scheduler->TaskPoolERTR[worker_pool->PoolIndex]      += n_queue;
+            _InterlockedIncrement64((volatile LONGLONG*)&scheduler->ReadyEventCount);
+            return PAL_TASK_SCHEDULER_WAKE_RESULT_QUEUED;
+        } else {
+            /* hand out tasks to waiting threads and wake them up */
+            while (n_pop != 0) {
+                PAL_TASK_POOL *woken = pools[pop[n_pop--]];
+                woken->WakeupTaskId  = give_tasks[n_given++];
+                ReleaseSemaphore(woken->ParkSemaphore, 1, NULL);
+            }
+        }
+    }
+    return PAL_TASK_SCHEDULER_WAKE_RESULT_WAKEUP;
 }
 
 /* @summary Attempt to steal work from another thread's ready-to-run queue.
@@ -1671,18 +1757,48 @@ PAL_TaskPublish
         }
     } else {
         /* allocate a permits list from thread_pool */
+        PAL_TASKID       *start_task = task_id_list;
         pal_uint32_t      pool_index = thread_pool->PoolIndex;
+        pal_uint32_t    remain_count = task_count;
         pal_uint32_t      wait_count = 0;
         pal_uint32_t      list_count;
-        PAL_PERMITS_LIST *list_array[16];
+        PAL_PERMITS_LIST *list_array[PAL_TASK_STATE_TAG_MAX_PERMITS_LISTS];
 
-        list_count = (dependency_count + 29) / 30;
-        PAL_TaskPoolAllocatePermitsLists(thread_pool, list_array, list_count);
-        /* TODO: make this code work for multiple lists */
+        if (task_count <= PAL_TASK_MAX_PERMITS_PER_LIST) {
+            /* in the common case, there's only one permits list needed */
+            list_count  = 1;
+        } else {
+            /* many tasks are being published at once - produce multiple lists */
+            list_count = (task_count +(PAL_TASK_MAX_PERMITS_PER_LIST-1)) / PAL_TASK_MAX_PERMITS_PER_LIST;
+            if (list_count > PAL_TASK_STATE_TAG_MAX_PERMITS_LISTS) {
+                /* too many tasks depend on these dependencies */
+                return -1;
+            }
+        }
+        if (PAL_TaskPoolAllocatePermitsLists(thread_pool, list_array, list_count) != 0) {
+            /* failed to allocate the necessary number of permit lists */
+            return -1;
+        }
+
+        /* populate the permit lists */
         for (i = 0; i < list_count; ++i) {
+            pal_uint32_t    num_task;
+            
+            if (remain_count >= PAL_TASK_MAX_PERMITS_PER_LIST) {
+                /* the task list in this permits list is full */
+                num_task = PAL_TASK_MAX_PERMITS_PER_LIST;
+            } else {
+                /* the task list in this permits list is partial - 'null terminate' */
+                num_task = remain_count;
+                list_array[i]->TaskList[remain_count] = PAL_TASKID_NONE;
+            }
+
             list_array[i]->WaitCount =-(pal_sint32_t) dependency_count;
             list_array[i]->PoolIndex =  pool_index;
-            PAL_CopyMemory(list_array[i]->TaskList, task_id_list, task_count);
+            PAL_CopyMemory(list_array[i]->TaskList, start_task, num_task);
+
+            start_task   += PAL_TASK_MAX_PERMITS_PER_LIST;
+            remain_count -= num_task;
         }
 
         /* publish each permits list to each blocking task */
@@ -1692,6 +1808,20 @@ PAL_TaskPublish
             PAL_TASK_DATA *blocking_task =&scheduler->TaskPoolList[blocking_pidx]->TaskSlotData[blocking_sidx];
             for (j = 0; j < list_count; ++j) {
                 wait_count += PAL_TaskDataPublishPermitsList(blocking_task, list_array[j], dependency_list[i]);
+            }
+        }
+        if (wait_count != dependency_count) {
+            /* some, but not all dependencies have completed.
+             * race with the blocking tasks to ready these tasks. */
+            pal_uint32_t completed_count = dependency_count - wait_count;
+            pal_uint32_t    permit_index;
+            if (_InterlockedExchangeAdd((volatile LONG*)&list_array[0]->WaitCount, (LONG) completed_count) == 0) {
+                /* all dependencies have completed */
+                for (i = 0; i < list_count; ++i) {
+                    permit_index = PAL_TaskPoolGetSlotIndexForPermitList(thread_pool, list_array[i]);
+                    PAL_TaskPoolMakePermitsListFree(thread_pool, permit_index);
+                }
+                wait_count = 0;
             }
         }
 
@@ -1721,95 +1851,4 @@ PAL_TaskComplete
     PAL_TASK_DATA      *task_data =&pool_list[task_pidx]->TaskSlotData[task_slot];
     PAL_TaskPoolCompleteTask(scheduler, thread_pool, owner_pool, task_data, task_slot, generation);
 }
-
-#if 0
-static int
-PAL_TaskSchedulerWakeWorker /* to be called when a worker makes a task ready-to-run via publish or complete */
-(
-    struct PAL_TASK_SCHEDULER *scheduler,
-    struct PAL_TASK_POOL    *worker_pool,
-    PAL_TASKID                 give_task
-)
-{
-    pal_uint32_t tos = scheduler->ParkedThreadTOS;
-    pal_uint32_t idx;
-    _ReadWriteBarrier();
-    for ( ; ; ) {
-        if (tos == 0) {
-            /* should add to RTR queue and inc estimated count for pool idx and event count */
-            scheduler->TaskPoolERTR[worker_pool->PoolIndex]++;
-            PAL_TaskPoolPublishReadyTask(worker_pool, give_task);
-            return NO_WORKERS_WAITING;
-        }
-        idx = scheduler->ParkedThreadIds[tos-1];
-        if ((value = CAS(&scheduler->ParkedThreadTOS, tos-1, tos)) == tos) {
-            /* successfully popped a worker, assign to mail slot */
-            PAL_THREAD_POOL *woke_pool = scheduler->TaskPoolList[idx];
-            woke_pool->WakeTaskId = give_task;
-            PAL_SemaphorePostOne(&woke_pool->ParkSem);
-            return WORKER_WOKEN;
-        } else {
-            /* CAS failed; try again */
-            tos = value;
-        }
-    }
-    /* waiting threads are maintained on a LIFO.
-     * if any threads are waiting, pop one and assign it give_task.
-     * then sem_post to wake it, and return a value indicating the task was assigned.
-     * if no threads are waiting, return a value indicating the task was not assigned;
-     * the caller should add the task to its RTR queue (or just do that here?) */
-}
-
-static int
-PAL_TaskSchedulerParkWorker /* to be called when a worker runs out of work in its local RTR deque */
-(
-    struct PAL_TASK_SCHEDULER *scheduler,
-    struct PAL_TASK_POOL    *worker_pool,
-    pal_uint32_t             *steal_list,
-    pal_uint32_t          max_steal_list,
-    pal_uint32_t         *num_steal_list
-)
-{
-    pal_uint32_t event_count = scheduler->ReadyEventCount;
-    pal_uint32_t     n_steal = 0;
-    _ReadWriteBarrier();
-    if (max_steal_list > 0) {
-        do {
-            for (i = 0, n = scheduler->TaskPoolCount; i < n; ++i) {
-                if (scheduler->TaskPoolERTR[i] > THRESHOLD) {
-                    steal_list[n_steal++] = i;
-                    if (n_steal == max_steal_list)
-                        break;
-                }
-            }
-            if (n_steal == 0) {
-                if ((value = CAS(&scheduler->ReadyEventCount, event_count, event_count)) == event_count) {
-                    goto park_thread;
-                }
-            }
-        } while (n_steal == 0);
-    }
-    if (n_steal > 0) {
-        return WORKER_STEAL;
-    }
-
-park_thread:
-    PAL_SemaphoreWait(&worker_pool->ParkSem);
-    if (scheduler->ShutdownSignal) {
-        /* woken due to shutdown */
-        return WORKER_SHUTDOWN;
-    } else {
-        /* woken due to work item */
-        return CHECK_MAILSLOT;
-    }
-    /* snapshot the publish event count.
-     * run through the set of estimated RTR queue counts.
-     * any queue with RTR count > threshold should get added to steal_list.
-     * if no targets meet the threshold, attempt to CAS the event count with itself.
-     * if the CAS succeeds, no events have been published and the worker should park.
-     * if the CAS fails, at least one event has been published, so run through again.
-     * if the steal_list has at least one target in it, return a code to the caller
-     * to indicate that it should attempt to steal from the listed pools. */
-}
-#endif
 
