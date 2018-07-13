@@ -33,22 +33,26 @@
     ((_mb) * 1024UL * 1024UL)
 #endif
 
+/* @summary Define the values returned from various tests.
+ */
 #ifndef TEST_PASS_FAIL
 #define TEST_PASS_FAIL
-#define TEST_PASS    1
-#define TEST_FAIL    0
+#define TEST_PASS                   1
+#define TEST_FAIL                   0
 #endif
 
+/* @summary Define values passed to CreateTaskScheduler to force a single worker thread only, or allow the number of threads to be based on the number of logical processors.
+ */
 #ifndef FORCE_SINGLE_CORE
-#define FORCE_SINGLE_CORE    1
+#define FORCE_SINGLE_CORE           1
+#define ALLOW_MULTI_CORE            0
 #endif
 
-#ifndef ALLOW_MULTI_CORE
-#define ALLOW_MULTI_CORE     0
-#endif
-
+/* @summary Define values passed to CreateTaskScheduler to print or not print the host CPU attributes and scheduler configuration.
+ */
 #ifndef PRINT_CONFIGURATION
-#define PRINT_CONFIGURATION  1
+#define PRINT_CONFIGURATION         1
+#define DONT_PRINT_CONFIGURATION    0
 #endif
 
 /* @summary Data associated with simple no-op tasks that set a flag value.
@@ -71,6 +75,27 @@ FinishTaskMain_Auto
     FLAG_TASK_DATA *argp =(FLAG_TASK_DATA*) args->TaskArguments;
     argp->Flag = 1;
 }
+
+#if 0
+static pal_uint32_t
+ThreadMain_Sample
+(
+    struct PAL_THREAD_INIT *init
+)
+{
+    void           *context =(void*) PAL_ThreadPoolGetPoolContext(init->ThreadPool);
+    pal_uint32_t self_index = init->ThreadIndex;
+    pal_uint32_t  exit_code = 0;
+
+    PAL_SetThreadName("SampleThread");
+    /* other simple init here */
+
+    /* do work here */
+
+finish:
+    return exit_code;
+}
+#endif
 
 /* @summary Define the the callback function invoked to perform initialization for a task system asynchronous I/O worker thread.
  * The callback should allocate any per-thread data it needs and return a pointer to that data in the out_thread_context parameter.
@@ -222,6 +247,9 @@ CreateTaskScheduler
     return PAL_TaskSchedulerCreate(&scheduler_init);
 }
 
+/* @summary Shut down all worker threads and free resources associated with a task scheduler instance.
+ * @param scheduler The PAL_TASK_SCHEDULER to delete.
+ */
 static void
 DeleteTaskScheduler
 (
@@ -231,15 +259,18 @@ DeleteTaskScheduler
     PAL_TaskSchedulerDelete(scheduler);
 }
 
+/* @summary Ensure that permit lists can be allocated and freed from the same thread.
+ * @param global_arena The global application memory arena.
+ * @param scratch_arena The application scratch memory arena.
+ * @return Either TEST_PASS or TEST_FAIL.
+ */
 static int
 FTest_PermitListAllocFree
 (
     struct PAL_MEMORY_ARENA  *global_arena, 
     struct PAL_MEMORY_ARENA *scratch_arena
 )
-{   /* this test ensures that permit lists can be allocated and freed from the same thread, 
-     * and that if possible, the same chunk of permit lists is recycled.
-     */
+{
     pal_uint32_t const        LOOP_ITERS = PAL_PERMIT_LIST_CHUNK_SIZE / 16;
     pal_uint32_t              list_index = 0;
     PAL_TASK_SCHEDULER            *sched = NULL;
@@ -323,8 +354,13 @@ cleanup:
     return result;
 }
 
+/* @summary Create and run a single task through to completion. The task is set to autocomplete.
+ * @param global_arena The global application memory arena.
+ * @param scratch_arena The application scratch memory arena.
+ * @return Either TEST_PASS or TEST_FAIL.
+ */
 static int
-FTest_RunOneTask_NoDeps_Auto
+FTest_RunOneThread_NoDeps_Auto
 (
     struct PAL_MEMORY_ARENA  *global_arena, 
     struct PAL_MEMORY_ARENA *scratch_arena
@@ -398,11 +434,11 @@ FTest_RunOneTask_NoDeps_Auto
      * system will call PAL_TaskComplete based on some event, such as an asynchronous I/O event.
      */
     task->TaskMain       = FinishTaskMain_Auto;
+    task->TaskComplete   = PAL_TaskComplete_NoOp;
     task->TaskId         = task_id;         /* must be the ID supplied to PAL_TaskGetData */
     task->ParentId       = PAL_TASKID_NONE; /* must be the ID supplied as parent_id in PAL_TaskCreate */
     task->TaskFlags      = 0;
     task->CompletionType = PAL_TASK_COMPLETION_TYPE_AUTOMATIC;
-    task->Reserved       = 0;
     task_args->Magic     = 0xabadbeef;
     task_args->Flag      = 0;
 
@@ -430,6 +466,138 @@ cleanup:
     PAL_MemoryArenaResetToMarker(global_arena, global_mark);
     return result;
 }
+
+#if 0
+/* @summary Create and run a two tasks, a parent and a child, through to completion.
+ * The tasks are set to autocomplete. The child should always finish before the parent.
+ * @param global_arena The global application memory arena.
+ * @param scratch_arena The application scratch memory arena.
+ * @return Either TEST_PASS or TEST_FAIL.
+ */
+static int
+FTest_RunOneThread_NoDeps_WithExternChild_Auto
+(
+    struct PAL_MEMORY_ARENA  *global_arena, 
+    struct PAL_MEMORY_ARENA *scratch_arena
+)
+{
+    FLAG_TASK_DATA            *task_args = NULL;
+    PAL_TASK                *parent_task = NULL;
+    PAL_TASK                 *child_task = NULL;
+    PAL_TASK_SCHEDULER            *sched = NULL;
+    PAL_TASK_POOL             *main_pool = NULL;
+    PAL_MEMORY_ARENA_MARKER  global_mark;
+    PAL_MEMORY_ARENA_MARKER scratch_mark;
+    pal_usize_t           task_args_size;
+    PAL_TASKID            parent_task_id;
+    PAL_TASKID             child_task_id;
+    int                           result;
+
+    result       = TEST_PASS;
+    global_mark  = PAL_MemoryArenaMark(global_arena);
+    scratch_mark = PAL_MemoryArenaMark(scratch_arena);
+
+    if ((sched = CreateTaskScheduler(FORCE_SINGLE_CORE, 0)) == NULL) {
+        assert(0 && "CreateTaskScheduler failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    if ((main_pool = PAL_TaskSchedulerAcquireTaskPool(sched, PAL_TASK_POOL_TYPE_ID_MAIN, 0)) == NULL) {
+        assert(0 && "PAL_TaskSchedulerAcquireTaskPool(MAIN) failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    /* step 1 is to create a task ID for the parent task */
+    if (PAL_TaskCreate(main_pool, &parent_task_id, 1, PAL_TASKID_NONE) != 0) {
+        assert(0 && "PAL_TaskCreate failed (parent)");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    if (PAL_TaskIdGetValid(parent_task_id) == 0) {
+        assert(0 && "PAL_TaskCreate returned an invalid task ID (parent)");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    /* then do the same for the child task */
+    if (PAL_TaskCreate(main_pool, &child_task_id, 1, parent_task_id) != 0) {
+        assert(0 && "PAL_TaskCreate failed (child)");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    if (PAL_TaskIdGetValid(child_task_id) == 0) {
+        assert(0 && "PAL_TaskCreate returned an invalid task ID (child)");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    /* step 2 performs task setup.
+     * PAL_TaskGetData returns three pieces of information to you:
+     * 1. A pointer to the PAL_TASK, which you must fill out.
+     * 2. A pointer to the task-local data buffer, which you can use to specify per-task data.
+     * 3. The maximum number of bytes that can be written to the task-local data buffer.
+     */
+    if ((parent_task = PAL_TaskGetData(main_pool, parent_task_id, &task_args, &task_args_size)) == NULL) {
+        assert(0 && "PAL_TaskGetData failed (parent)");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    if (task_args == NULL || task_args_size == 0) {
+        assert(0 && "PAL_TaskGetData returned invalid task-local buffer (parent)");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    /* ALL fields of PAL_TASK must be set by your code.
+     * PAL_TASK::TaskMain specifies the function to run when the task executes.
+     * PAL_TASK::TaskId specifies the task identifier being assigned to the task.
+     * PAL_TASK::ParentId specifies the task identifier of the parent task. 
+     * The ParentId field is -not- set for you during PAL_TaskCreate; you must set it here.
+     * PAL_TASK::TaskFlags is reserved for future use and should be set to zero.
+     * PAL_TASK::CompletionType indicates how the task will be completed. Usually you set this 
+     * to PAL_TASK_COMPLETION_TYPE_AUTOMATIC, which means that the task system will automatically
+     * call PAL_TaskComplete after TaskMain returns. You can also set it to either one of 
+     * PAL_TASK_COMPLETION_TYPE_INTERNAL, which means that your TaskMain calls PAL_TaskComplete, 
+     * or PAL_TASK_COMPLETION_TYPE_EXTERNAL, which means that some callback outside of the task 
+     * system will call PAL_TaskComplete based on some event, such as an asynchronous I/O event.
+     */
+    parent_task->TaskMain       = FinishTaskMain_Auto;
+    parent_task->TaskId         = parent_task_id;  /* must be the ID supplied to PAL_TaskGetData */
+    parent_task->ParentId       = PAL_TASKID_NONE; /* must be the ID supplied as parent_id in PAL_TaskCreate */
+    parent_task->TaskFlags      = 0;
+    parent_task->CompletionType = PAL_TASK_COMPLETION_TYPE_AUTOMATIC;
+    parent_task->Reserved       = 0;
+    task_args->Magic     = 0xabadbeef;
+    task_args->Flag      = 0;
+
+    /* step 3 publishes the task, which potentially makes the task ready-to-run.
+     * a task becomes ready-to-run once all of its dependencies have completed. 
+     * dependencies allow you to specify a general ordering in which tasks will 
+     * run; for example, if task A computes some data that task B uses, you would 
+     * make task B dependent on task A, which guarantees that task B will not start
+     * running before task A completes.
+     */
+    if (PAL_TaskPublish(main_pool, &parent_task_id, 1, NULL, 0) != 0) {
+        assert(0 && "PAL_TaskPublish failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    /* even though the parent task has been publish, and may have already run, 
+     * it should not finish until the child task has finished. set up the child.
+     */
+
+    while (task_args->Flag == 0) {
+        Sleep(10);
+    }
+    Sleep(100);
+
+cleanup:
+    DeleteTaskScheduler(sched);
+    PAL_MemoryArenaResetToMarker(scratch_arena, scratch_mark);
+    PAL_MemoryArenaResetToMarker(global_arena, global_mark);
+    return result;
+}
+#endif
 
 int main
 (
@@ -486,26 +654,9 @@ int main
     global_arena_init.UserDataSize  = 0;
     PAL_MemoryArenaCreate(&global_arena, &global_arena_init);
 
-#if 0
-    PAL_TASK_SCHEDULER *sched = NULL;
-    PAL_TASK_POOL *main_pool = NULL;
-    PAL_TASKID *id_list = NULL;
-    pal_uint32_t i, j, n;
-    sched = CreateTaskScheduler(ALLOW_MULTI_CORE, PRINT_CONFIGURATION);
-    id_list = PAL_MemoryArenaAllocateHostArray(&global_arena, PAL_TASKID, 1024);
-    main_pool = PAL_TaskSchedulerAcquireTaskPool(sched, PAL_TASK_POOL_TYPE_ID_MAIN, 0);
-    for (j = 0; j < 1024; ++j) {
-        PAL_TaskCreate(main_pool, id_list, 1024);
-        for (i = 0, n = 1024; i < n; ++i) {
-            PAL_TaskDelete(main_pool, id_list[i]);
-        }
-    }
-    DeleteTaskScheduler(sched);
-#endif
-
     /* execute functional tests */
-    res = FTest_PermitListAllocFree   (&global_arena, &scratch_arena); printf("FTest_PermitListAllocFree   : %d\r\n", res);
-    res = FTest_RunOneTask_NoDeps_Auto(&global_arena, &scratch_arena); printf("FTest_RunOneTask_NoDeps_Auto: %d\r\n", res);
+    res = FTest_PermitListAllocFree     (&global_arena, &scratch_arena); printf("FTest_PermitListAllocFree     : %d\r\n", res);
+    res = FTest_RunOneThread_NoDeps_Auto(&global_arena, &scratch_arena); printf("FTest_RunOneThread_NoDeps_Auto: %d\r\n", res);
 
 cleanup_and_exit:
     PAL_HostMemoryRelease(&scratch_alloc);
