@@ -95,7 +95,6 @@
 #endif
 
 /* @summary Forward-declare the types exported by this module.
- * The type definitions are included in the platform-specific header.
  */
 struct  PAL_TASK;
 struct  PAL_TASK_ARGS;
@@ -103,6 +102,7 @@ struct  PAL_TASK_POOL;
 struct  PAL_TASK_POOL_INIT;
 struct  PAL_TASK_SCHEDULER;
 struct  PAL_TASK_SCHEDULER_INIT;
+struct  PAL_TASK_CALLBACK_CONTEXT;
 
 /* @summary Define a type used to represent a task identifier.
  * Task identifiers are allocated from and associated with a PAL_TASK_POOL bound to a specific OS thread.
@@ -133,12 +133,25 @@ typedef void (*PAL_TaskMain_Func)
     struct PAL_TASK_ARGS *args
 );
 
+/* @summary Define the signature for a callback invoked when a task completes.
+ * The callback does not necessarily run on the same thread that executed TaskMain.
+ * The callback is guaranteed to run after all dependencies and child tasks have completed.
+ * For automatically-completed tasks, this callback is always invoked after TaskMain has returned.
+ * For internally-completed tasks, this callback may run either before or after TaskMain has returned, depending on whether child tasks have completed.
+ * For externally-completed tasks, this callback may run either before or after TaskMain has returned, depending on when the external event occurs and whether child tasks have completed.
+ * @param args A PAL_TASK_ARGS instance specifying data associated with the task and data used to spawn additional tasks.
+ */
+typedef void (*PAL_TaskComplete_Func)
+(
+    struct PAL_TASK_ARGS *args
+);
+
 /* @summary Define the data supplied to a task during execution.
  * This data can be used to spawn additional root or child tasks.
  */
 typedef struct PAL_TASK_ARGS {
     struct PAL_TASK_SCHEDULER    *TaskScheduler;        /* The task scheduler managing task execution. Used to wait for a task to complete. */
-    struct PAL_TASK_POOL         *ExecutionPool;        /* The PAL_TASK_POOL bound to the thread executing the task. Used to spawn new tasks. */
+    struct PAL_TASK_POOL         *CallbackPool;         /* The PAL_TASK_POOL bound to the thread executing the task main or task completion callback. Used to spawn new tasks. */
     void                         *TaskArguments;        /* The argument data associated with the specific task that is executing. */
     void                         *ThreadContext;        /* Opaque data associated with the thread that is executing the task (the result stored in the thread_context argument set by PAL_TaskWorkerInit_Func). */
     PAL_TASKID                    TaskId;               /* The unique identifier for the task. */
@@ -146,6 +159,18 @@ typedef struct PAL_TASK_ARGS {
     pal_uint32_t                  ThreadIndex;          /* The zero-based index of the pool bound to the thread that is executing the task. */
     pal_uint32_t                  ThreadCount;          /* The total number of threads that execute and/or define tasks. */
 } PAL_TASK_ARGS;
+
+/* @summary Define the data associated with any thread that might execute a TaskMain or TaskComplete callback.
+ * Instances of this structure can be initialized using the PAL_TaskCallbackContextInit function.
+ */
+typedef struct PAL_TASK_CALLBACK_CONTEXT {
+    struct PAL_TASK_SCHEDULER    *TaskScheduler;        /* The task scheduler managing task execution. Used to wait for a task to complete. */
+    struct PAL_TASK_POOL         *CallbackPool;         /* The PAL_TASK_POOL bound to the thread executing the task main or task completion callback. Used to spawn new tasks. */
+    void                         *ThreadContext;        /* Opaque data associated with the thread that is executing the task (the result stored in the thread_context argument set by PAL_TaskWorkerInit_Func). */
+    pal_uint32_t                  ThreadId;             /* The operating system identifier of the thread executing the task. */
+    pal_uint32_t                  ThreadIndex;          /* The zero-based index of the pool bound to the thread that is executing the task. */
+    pal_uint32_t                  ThreadCount;          /* The total number of threads that execute and/or define tasks. */
+} PAL_TASK_CALLBACK_CONTEXT;
 
 /* @summary Define the data that represents a task. 
  * Application code first generates one or more PAL_TASKIDs using PAL_TaskCreate.
@@ -155,11 +180,11 @@ typedef struct PAL_TASK_ARGS {
  */
 typedef struct PAL_TASK {
     PAL_TaskMain_Func             TaskMain;             /* The function to run when the task is executed. */
+    PAL_TaskComplete_Func         TaskComplete;         /* The function to run when the task has completed. */
     PAL_TASKID                    TaskId;               /* The unique identifier for the task. The application should not modify this field. */
     PAL_TASKID                    ParentId;             /* The identifier of the parent task, if any. If the task is a root task with no parent, specify PAL_TASKID_NONE. */
     pal_uint32_t                  TaskFlags;            /* Flags specifying task publish and execution behavior. */
     pal_sint32_t                  CompletionType;       /* One of the values of the PAL_TASK_COMPLETION_TYPE enumeration indicating how the task will be completed. */
-    pal_uintptr_t                 Reserved;             /* completion callback? PAL_Semaphore* to signal? */
 } PAL_TASK;
 
 /* @summary Define the data used to describe a type of task pool.
@@ -293,6 +318,22 @@ PAL_TaskSchedulerBindPoolToThread
     pal_uint32_t            os_thread_id
 );
 
+/* @summary Initialize a PAL_TASK_CALLBACK_CONTEXT for a particular thread.
+ * @param context The PAL_TASK_CALLBACK_CONTEXT to initialize.
+ * @param scheduler The system task scheduler instance.
+ * @param thread_pool The task pool bound to the thread that owns the context.
+ * @param thread_context Opaque per-thread data supplied by the application. Normally this value is returned by PAL_TaskWorkerInit_Func, but the caller may supply any value.
+ * @return Zero if all arguments are valid, or non-zero if an error occurred.
+ */
+PAL_API(int)
+PAL_TaskCallbackContextInit
+(
+    struct PAL_TASK_CALLBACK_CONTEXT *context, 
+    struct PAL_TASK_SCHEDULER      *scheduler, 
+    struct PAL_TASK_POOL         *thread_pool, 
+    void                      *thread_context
+);
+
 /* @summary Create one or more tasks. This step allocates the task IDs. The tasks cannot execute until they are published.
  * For each returned task ID, the application must call PAL_TaskGetData to retrieve the PAL_TASK and argument data within the task pool.
  * With the PAL_TASK, the application can set the task parent, entry point routine and any store any argument data.
@@ -352,17 +393,50 @@ PAL_TaskPublish
     pal_uint32_t     dependency_count
 );
 
+/* @summary Execute tasks on the calling thread until a specific task has completed.
+ * This function may execute task main callbacks on the calling thread.
+ * This function may execute task completion callbacks on the calling thread.
+ * This function returns when the specified task has completed.
+ * @param thread_context The PAL_TASK_CALLBACK_CONTEXT associated with the calling thread.
+ * @param wait_task The identifier of the task to wait for.
+ */
+PAL_API(void)
+PAL_TaskWait
+(
+    struct PAL_TASK_CALLBACK_CONTEXT *thread_context, 
+    PAL_TASKID                             wait_task
+);
+
 /* @summary Indicate that a task has completed.
  * Automatically-completed tasks do not need to call this function.
- * This function should be called on the same thread that completed the task.
+ * This function may execute the task's completion callback on the calling thread.
+ * @param thread_context The PAL_TASK_CALLBACK_CONTEXT associated with the calling thread.
  * @param thread_pool The PAL_TASK_POOL bound to the thread that completed the task.
  * @param completed_task The identifier of the completed task.
  */
 PAL_API(void)
 PAL_TaskComplete
 (
-    struct PAL_TASK_POOL *thread_pool, 
-    PAL_TASKID         completed_task
+    struct PAL_TASK_CALLBACK_CONTEXT *thread_context, 
+    PAL_TASKID                        completed_task
+);
+
+/* @summary Implement a no-op TaskMain callback for use by the application.
+ * @param args A PAL_TASK_ARGS instance specifying data associated with the task and data used to spawn additional tasks.
+ */
+PAL_API(void)
+PAL_TaskMain_NoOp
+(
+    struct PAL_TASK_ARGS *args
+);
+
+/* @summary Implement a no-op TaskComplete callback for use by the application.
+ * @param args A PAL_TASK_ARGS instance specifying data associated with the task and data used to spawn additional tasks.
+ */
+PAL_API(void)
+PAL_TaskComplete_NoOp
+(
+    struct PAL_TASK_ARGS *args
 );
 
 #ifdef __cplusplus
