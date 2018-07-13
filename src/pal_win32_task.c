@@ -224,6 +224,31 @@ typedef enum PAL_TASK_SCHEDULER_WAKE_RESULT {
     PAL_TASK_SCHEDULER_WAKE_RESULT_WAKEUP     =  1, /* The scheduler woke a waiting thread to process the task. */
 } PAL_TASK_SCHEDULER_WAKE_RESULT;
 
+/* @summary Initialize a PAL_TASK_ARGS structure in preparation for invoking a task callback.
+ * @param args The PAL_TASK_ARGS instance to initialize.
+ * @param data The PAL_TASK_DATA associated with the task. Specify NULL if no task is being executed or completed.
+ * @param context The PAL_TASK_CALLBACK_CONTEXT associated with the thread that will execute the callback.
+ * @param task_id The identifier of the task being executed or completed. Specify PAL_TASKID_NONE of no task is being executed or completed.
+ */
+static void
+PAL_TaskArgsInit
+(
+    struct PAL_TASK_ARGS                *args, 
+    struct PAL_TASK_DATA                *data, 
+    struct PAL_TASK_CALLBACK_CONTEXT *context, 
+    PAL_TASKID                        task_id
+)
+{
+    args->TaskScheduler = context->TaskScheduler;
+    args->CallbackPool  = context->CallbackPool;
+    args->TaskArguments = data->Arguments;
+    args->ThreadContext = context->ThreadContext;
+    args->TaskId        = task_id;
+    args->ThreadId      = context->ThreadId;
+    args->ThreadIndex   = context->ThreadIndex;
+    args->ThreadCount   = context->ThreadCount;
+}
+
 /* @summary Implement a default thread initialization function.
  * @param task_scheduler The task scheduler that owns the worker thread.
  * @param thread_task_pool The PAL_TASK_POOL allocated to the worker thread.
@@ -844,20 +869,20 @@ PAL_TaskSchedulerStealWork
 }
 
 /* @summary Register completion of a task. This may make additional tasks ready to run.
- * @param scheduler The PAL_TASK_SCHEDULER responsible for managing work within the system.
- * @param completion_pool The PAL_TASK_POOL bound to the thread that completed the task.
+ * @param ctx The PAL_TASK_CALLBACK_CONTEXT associated with the calling thread.
  * @param owner_pool The PAL_TASK_POOL bound to the thread that created the task.
  * @param task_data The PAL_TASK_DATA associated with the completed task.
+ * @param task_id The identifier of the completed task.
  * @param slot_index The zero-based index of the task data slot associated with the completed task.
  * @param generation The generation value of the task data slot associated with the completed task.
  */
 static void
 PAL_TaskPoolCompleteTask
 (
-    struct PAL_TASK_SCHEDULER  *scheduler,
-    struct PAL_TASK_POOL *completion_pool,
+    struct PAL_TASK_CALLBACK_CONTEXT *ctx, 
     struct PAL_TASK_POOL      *owner_pool,
     struct PAL_TASK_DATA       *task_data,
+    PAL_TASKID                    task_id, 
     pal_uint32_t               slot_index,
     pal_uint32_t               generation
 )
@@ -869,13 +894,15 @@ PAL_TaskPoolCompleteTask
          * the state tag for a completed task clears the cancellation bit, 
          * sets the number of permits to zero, and increments the generation.
          */
-        pal_uint32_t     new_gen =(generation + 1) & PAL_TASK_STATE_TAG_GENER_MASK;
-        pal_uint32_t    done_tag = new_gen << PAL_TASK_STATE_TAG_GENER_SHIFT;
-        pal_uint32_t   state_tag = task_data->StateTag;
-        pal_uint32_t num_permits;
-        pal_uint32_t       value;
-        pal_uint32_t        i, j;
-        PAL_TASKID   parent_task;
+        PAL_TASK_SCHEDULER *scheduler = ctx->TaskScheduler;
+        pal_uint32_t          new_gen =(generation + 1) & PAL_TASK_STATE_TAG_GENER_MASK;
+        pal_uint32_t         done_tag = new_gen << PAL_TASK_STATE_TAG_GENER_SHIFT;
+        pal_uint32_t        state_tag = task_data->StateTag;
+        pal_uint32_t      num_permits;
+        pal_uint32_t            value;
+        pal_uint32_t             i, j;
+        PAL_TASKID        parent_task;
+        PAL_TASK_ARGS            args;
         
         _ReadWriteBarrier();
         
@@ -891,16 +918,21 @@ PAL_TaskPoolCompleteTask
             state_tag = value;
         }
 
+        /* run the task completion callback */
+        PAL_TaskArgsInit(&args, task_data, ctx, task_id);
+        task_data->PublicData.TaskComplete(&args);
+
+        /* bubble completion up to the parent task */
         if ((parent_task = task_data->PublicData.ParentId) != PAL_TASKID_NONE) {
-            /* bubble completion up to the parent task */
             pal_uint32_t   parent_pidx = PAL_TaskIdGetTaskPoolIndex(parent_task);
             pal_uint32_t   parent_slot = PAL_TaskIdGetTaskSlotIndex(parent_task);
             pal_uint32_t   parent_genr = PAL_TaskIdGetGeneration(parent_task);
             PAL_TASK_POOL *parent_pool = scheduler->TaskPoolList[parent_pidx];
             PAL_TASK_DATA *parent_data =&scheduler->TaskPoolList[parent_pidx]->TaskSlotData[parent_slot];
-            PAL_TaskPoolCompleteTask(scheduler, completion_pool, parent_pool,  parent_data, parent_slot, parent_genr);
+            PAL_TaskPoolCompleteTask(ctx, parent_pool, parent_data, parent_task, parent_slot, parent_genr);
         }
 
+        /* process any associated permits lists */
         for (i = 0, num_permits = PAL_TaskStateTagGetPermitsCount(state_tag); i < num_permits; ++i) {
             PAL_PERMITS_LIST *p = task_data->Permits[i];
             if (_InterlockedIncrement((volatile LONG*)&p->WaitCount) == 0) {
@@ -908,11 +940,12 @@ PAL_TaskPoolCompleteTask
                 PAL_TASK_POOL *permit_owner = scheduler->TaskPoolList[p->PoolIndex];
                 pal_uint32_t   permit_index = PAL_TaskPoolGetSlotIndexForPermitList(permit_owner, p);
                 for (j = 0; p->TaskList[j] != PAL_TASKID_NONE; ++j) {
-                    PAL_TaskSchedulerWakeWorker(scheduler, completion_pool, p->TaskList[j]);
+                    PAL_TaskSchedulerWakeWorker(scheduler, ctx->CallbackPool, p->TaskList[j]);
                 }
                 PAL_TaskPoolMakePermitsListFree(permit_owner, permit_index);
             }
         }
+
         /* allow the task data slot to be reused */
         PAL_TaskPoolMakeTaskSlotFree(owner_pool, slot_index, new_gen);
     }
@@ -942,6 +975,7 @@ PAL_CpuWorkerThreadMain
     pal_sint32_t         wake_reason = PAL_TASK_SCHEDULER_PARK_RESULT_WAKE_TASK;
     pal_uint32_t         steal_count = 0;
     pal_uint32_t         steal_index = 0;
+    PAL_TASK_CALLBACK_CONTEXT   exec;
     PAL_TASK_ARGS          task_args;
     pal_uint32_t          pool_index;
     pal_uint32_t          slot_index;
@@ -966,13 +1000,9 @@ PAL_CpuWorkerThreadMain
         return 2;
     }
 
-    /* set constant fields of PAL_TASK_ARGS */
-    task_args.TaskScheduler = scheduler;
-    task_args.ExecutionPool = thread_pool;
-    task_args.ThreadContext = thread_ctx;
-    task_args.ThreadId      = thread_pool->OsThreadId;
-    task_args.ThreadIndex   = thread_pool->PoolIndex;
-    task_args.ThreadCount   = scheduler->TaskPoolCount;
+    /* initialize the PAL_TASK_CALLBACK_CONTEXT and PAL_TASK_ARGS */
+    PAL_TaskCallbackContextInit(&exec, scheduler, thread_pool, thread_ctx);
+    PAL_TaskArgsInit(&task_args, NULL, &exec, PAL_TASKID_NONE);
 
     /* thread initialization has completed */
     SetEvent(init->ReadySignal); init = NULL;
@@ -1001,10 +1031,10 @@ PAL_CpuWorkerThreadMain
                 generation = PAL_TaskIdGetGeneration(current_task);
                 task_data  =&pool_list[pool_index]->TaskSlotData[slot_index];
                 task_args.TaskArguments = task_data->Arguments;
-                task_args.TaskId = current_task;
+                task_args.TaskId        = current_task;
                 task_data->PublicData.TaskMain(&task_args);
                 if (task_data->PublicData.CompletionType == PAL_TASK_COMPLETION_TYPE_AUTOMATIC) {
-                    PAL_TaskPoolCompleteTask(scheduler, thread_pool, pool_list[pool_index], task_data, slot_index, generation);
+                    PAL_TaskPoolCompleteTask(&exec, pool_list[pool_index], task_data, current_task, slot_index, generation);
                 }
 
                 /* executing the task may have produced one or more additional
@@ -1043,6 +1073,8 @@ PAL_AioWorkerThreadMain
     ULONG_PTR                    key = 0;
     DWORD                     nbytes = 0;
     unsigned int           exit_code = 0;
+    PAL_TASK_CALLBACK_CONTEXT   exec;
+    PAL_TASK_ARGS          task_args;
 
     /* set the thread name for diagnostics tools */
     PAL_ThreadSetName("I/O Worker");
@@ -1059,6 +1091,10 @@ PAL_AioWorkerThreadMain
         SetEvent(init->ErrorSignal);
         return 2;
     }
+
+    /* initialize the PAL_TASK_CALLBACK_CONTEXT and PAL_TASK_ARGS */
+    PAL_TaskCallbackContextInit(&exec, scheduler, thread_pool, thread_ctx);
+    PAL_TaskArgsInit(&task_args, NULL, &exec, PAL_TASKID_NONE);
 
     /* thread initialization has completed */
     SetEvent(init->ReadySignal); init = NULL;
@@ -1646,6 +1682,32 @@ PAL_TaskSchedulerBindPoolToThread
 }
 
 PAL_API(int)
+PAL_TaskCallbackContextInit
+(
+    struct PAL_TASK_CALLBACK_CONTEXT *context, 
+    struct PAL_TASK_SCHEDULER      *scheduler, 
+    struct PAL_TASK_POOL         *thread_pool, 
+    void                      *thread_context
+)
+{
+    if (context && scheduler && thread_pool) {
+        if (thread_pool->OsThreadId == 0) {
+            assert(thread_pool->OsThreadId != 0 && "Use PAL_TaskSchedulerBindPoolToThread to bind to an OS thread");
+            PAL_ZeroMemory(context, sizeof(PAL_TASK_CALLBACK_CONTEXT));
+            return -1;
+        }
+        context->TaskScheduler = scheduler;
+        context->CallbackPool  = thread_pool;
+        context->ThreadContext = thread_context;
+        context->ThreadId      = thread_pool->OsThreadId;
+        context->ThreadIndex   = thread_pool->PoolIndex;
+        context->ThreadCount   = scheduler->TaskPoolCount;
+        return 0;
+    }
+    return -1;
+}
+
+PAL_API(int)
 PAL_TaskCreate
 (
     struct PAL_TASK_POOL *thread_pool,
@@ -1835,20 +1897,74 @@ PAL_TaskPublish
     return 0;
 }
 
+#if 0
+PAL_API(void)
+PAL_TaskWait
+(
+    struct PAL_TASK_CALLBACK_CONTEXT *thread_context, 
+    PAL_TASKID                             wait_task
+)
+{
+    if (PAL_TaskIdGetValid(wait_task)) {
+        PAL_TASK_SCHEDULER *sched = thread_context->TaskScheduler;
+        PAL_TASK_POOL **pool_list = thread_context->TaskScheduler->TaskPoolList;
+        pal_uint32_t    wait_pidx = PAL_TaskIdGetTaskPoolIndex(wait_task);
+        pal_uint32_t    wait_slot = PAL_TaskIdGetTaskSlotIndex(wait_task);
+        pal_uint32_t   generation = PAL_TaskIdGetGeneration(wait_task);
+        pal_uint32_t  current_gen;
+        pal_uint32_t    state_tag;
+        PAL_TASK_DATA  *wait_data;
+        PAL_TASK_DATA  *task_data;
+        PAL_TASK_ARGS        args;
+
+        /* retrieve the data for the task being waited on */
+        wait_data   =&pool_list[wait_pidx]->TaskSlotData[wait_slot];
+        state_tag   = wait_data->StateTag;
+        _ReadWriteBarrier(); /* load-acquire wait_data->StateTag */
+        current_gen = PAL_TaskStateTagGetGeneration(state_tag);
+
+        /* when the wait_task is completed, the generation value in its 
+         * PAL_TASK_DATA::StateTag field is updated. therefore, while 
+         * the generation values remain the same, execute other work. 
+         */
+        while (current_gen == generation) {
+            /* remember to check sched->ShutdownSignal */
+        }
+    }
+}
+#endif
+
 PAL_API(void)
 PAL_TaskComplete
 (
-    struct PAL_TASK_POOL *thread_pool, 
-    PAL_TASKID         completed_task
+    struct PAL_TASK_CALLBACK_CONTEXT *thread_context, 
+    PAL_TASKID                        completed_task
 )
 {
-    PAL_TASK_SCHEDULER *scheduler = thread_pool->TaskScheduler;
-    PAL_TASK_POOL     **pool_list = scheduler->TaskPoolList;
+    PAL_TASK_POOL     **pool_list = thread_context->TaskScheduler->TaskPoolList;
     pal_uint32_t        task_pidx = PAL_TaskIdGetTaskPoolIndex(completed_task);
     pal_uint32_t        task_slot = PAL_TaskIdGetTaskSlotIndex(completed_task);
     pal_uint32_t       generation = PAL_TaskIdGetGeneration(completed_task);
     PAL_TASK_POOL     *owner_pool = pool_list[task_pidx];
     PAL_TASK_DATA      *task_data =&pool_list[task_pidx]->TaskSlotData[task_slot];
-    PAL_TaskPoolCompleteTask(scheduler, thread_pool, owner_pool, task_data, task_slot, generation);
+    PAL_TaskPoolCompleteTask(thread_context, owner_pool, task_data, completed_task, task_slot, generation);
+}
+
+PAL_API(void)
+PAL_TaskMain_NoOp
+(
+    struct PAL_TASK_ARGS *args
+)
+{
+    PAL_UNUSED_ARG(args);
+}
+
+PAL_API(void)
+PAL_TaskComplete_NoOp
+(
+    struct PAL_TASK_ARGS *args
+)
+{
+    PAL_UNUSED_ARG(args);
 }
 
