@@ -10,10 +10,12 @@
 #include "pal_memory.h"
 #include "pal_thread.h"
 #include "pal_task.h"
+#include "pal_time.h"
 
 #include "pal_win32_memory.c"
 #include "pal_win32_thread.c"
 #include "pal_win32_task.c"
+#include "pal_win32_time.c"
 
 /* @summary Specify a size in kilobytes.
  * @param _kb The size in kilobytes.
@@ -55,25 +57,91 @@
 #define DONT_PRINT_CONFIGURATION    0
 #endif
 
-/* @summary Data associated with simple no-op tasks that set a flag value.
+/* @summary Wrap a synchronization object that the host can wait on until another thread signals.
  */
-typedef struct FLAG_TASK_DATA {
-    pal_uint32_t          Magic;   /* The test setup can specify a bit pattern here. */
-    pal_sint32_t volatile Flag;    /* Initialized to zero by test setup, set to 1 by task main. */
-} FLAG_TASK_DATA;
+typedef struct WIN32_SIGNAL {
+    HANDLE                Event;   /* A manual-reset event. */
+} WIN32_SIGNAL;
 
-/* @summary Define the entry point for a task that sets FLAG_TASK_DATA::Flag to 1.
- * The task should be created as an auto-completion task.
- * @param args Data associated with task execution. TaskArguments points to a FLAG_TASK_DATA.
+/* @summary Data associated with tasks that write timestamp values into an array to evaluate execution or completion order.
+ */
+typedef struct TIMESTAMP_TASK_DATA {
+    struct WIN32_SIGNAL  *Signal;  /* The event to signal when TsCount reaches Trigger. */
+    pal_uint64_t         *TsArray; /* The array of timestamp values. */
+    pal_sint32_t         *TsCount; /* The number of timestamps written to TsArray. Shared! */
+    pal_uint32_t          TsIndex; /* The zero-based index to write to in TsArray. */
+    pal_sint32_t          Trigger; /* When TsCount reaches this value, signal the signal. */
+} TIMESTAMP_TASK_DATA;
+
+static int
+CreateSignal
+(
+    struct WIN32_SIGNAL *signal
+)
+{
+    if((signal->Event = CreateEvent(NULL, TRUE, FALSE, NULL)) == NULL) {
+        signal->Event = NULL;
+        return -1;
+    }
+    return 0;
+}
+
+static void
+DeleteSignal
+(
+    struct WIN32_SIGNAL *signal
+)
+{
+    CloseHandle(signal->Event);
+    signal->Event = NULL;
+}
+
+static void
+WaitSignal
+(
+    struct WIN32_SIGNAL *signal
+)
+{
+    WaitForSingleObject(signal->Event, INFINITE);
+}
+
+static void
+SignalSignal
+(
+    struct WIN32_SIGNAL *signal
+)
+{
+    SetEvent(signal->Event);
+}
+
+static pal_sint32_t
+AtomicIncrement32
+(
+    pal_sint32_t volatile *addr
+)
+{
+    return (pal_sint32_t)_InterlockedIncrement((volatile LONG*) addr);
+}
+
+/* @summary Define the entry point or completion callback that writes the current timestamp into an array.
+ * This can be used to evaluate the execution or completion order of a set of tasks.
+ * @param args Data associated with task execution. TaskArguments points to a TIMESTAMP_TASK_DATA.
  */
 static void
-FinishTaskMain_Auto
+Task_WriteTimestamp
 (
     struct PAL_TASK_ARGS *args
 )
 {
-    FLAG_TASK_DATA *argp =(FLAG_TASK_DATA*) args->TaskArguments;
-    argp->Flag = 1;
+    TIMESTAMP_TASK_DATA   *argp  =(TIMESTAMP_TASK_DATA*) args->TaskArguments;
+    pal_sint32_t          count;
+
+    argp->TsArray[argp->TsIndex] = PAL_TimestampInTicks();
+    printf("Task_WriteTimestamp(%u)\r\n", argp->TsIndex);
+    if ((count = AtomicIncrement32(argp->TsCount)) == argp->Trigger) {
+        printf("Task_WriteTimestamp(%u) triggers\r\n",argp->TsIndex);
+        SignalSignal(argp->Signal);
+    }
 }
 
 #if 0
@@ -367,13 +435,16 @@ FTest_RunOneThread_NoDeps_Auto
 )
 {   /* this test exercises the lifecycle of a single task.
      */
-    FLAG_TASK_DATA            *task_args = NULL;
+    WIN32_SIGNAL                  signal = {0};
+    TIMESTAMP_TASK_DATA       *task_args = NULL;
     PAL_TASK                       *task = NULL;
     PAL_TASK_SCHEDULER            *sched = NULL;
     PAL_TASK_POOL             *main_pool = NULL;
     PAL_MEMORY_ARENA_MARKER  global_mark;
     PAL_MEMORY_ARENA_MARKER scratch_mark;
+    pal_uint64_t           timestamps[1];
     pal_usize_t           task_args_size;
+    pal_sint32_t          complete_count;
     PAL_TASKID                   task_id;
     int                           result;
 
@@ -391,6 +462,15 @@ FTest_RunOneThread_NoDeps_Auto
         result = TEST_FAIL;
         goto cleanup;
     }
+
+    /* zero the timestamps array */
+    PAL_ZeroMemory(timestamps, sizeof(timestamps));
+    if (CreateSignal(&signal) != 0) {
+        assert(0 && "CreateSignal failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    complete_count = 0;
 
     /* step 1 is to create a task ID */
     if (PAL_TaskCreate(main_pool, &task_id, 1, PAL_TASKID_NONE) != 0) {
@@ -433,14 +513,17 @@ FTest_RunOneThread_NoDeps_Auto
      * or PAL_TASK_COMPLETION_TYPE_EXTERNAL, which means that some callback outside of the task 
      * system will call PAL_TaskComplete based on some event, such as an asynchronous I/O event.
      */
-    task->TaskMain       = FinishTaskMain_Auto;
-    task->TaskComplete   = PAL_TaskComplete_NoOp;
+    task->TaskMain       = PAL_TaskMain_NoOp;
+    task->TaskComplete   = Task_WriteTimestamp;
     task->TaskId         = task_id;         /* must be the ID supplied to PAL_TaskGetData */
     task->ParentId       = PAL_TASKID_NONE; /* must be the ID supplied as parent_id in PAL_TaskCreate */
-    task->TaskFlags      = 0;
     task->CompletionType = PAL_TASK_COMPLETION_TYPE_AUTOMATIC;
-    task_args->Magic     = 0xabadbeef;
-    task_args->Flag      = 0;
+    task->TaskFlags      = 0;
+    task_args->Signal    =&signal;
+    task_args->TsArray   = timestamps;
+    task_args->TsCount   =&complete_count;
+    task_args->TsIndex   = 0;
+    task_args->Trigger   = 1;
 
     /* step 3 publishes the task, which potentially makes the task ready-to-run.
      * a task becomes ready-to-run once all of its dependencies have completed. 
@@ -455,19 +538,16 @@ FTest_RunOneThread_NoDeps_Auto
         goto cleanup;
     }
 
-    while (task_args->Flag == 0) {
-        Sleep(10);
-    }
-    Sleep(100);
+    WaitSignal(&signal);
 
 cleanup:
+    DeleteSignal(&signal);
     DeleteTaskScheduler(sched);
     PAL_MemoryArenaResetToMarker(scratch_arena, scratch_mark);
     PAL_MemoryArenaResetToMarker(global_arena, global_mark);
     return result;
 }
 
-#if 0
 /* @summary Create and run a two tasks, a parent and a child, through to completion.
  * The tasks are set to autocomplete. The child should always finish before the parent.
  * @param global_arena The global application memory arena.
@@ -481,17 +561,24 @@ FTest_RunOneThread_NoDeps_WithExternChild_Auto
     struct PAL_MEMORY_ARENA *scratch_arena
 )
 {
-    FLAG_TASK_DATA            *task_args = NULL;
+    WIN32_SIGNAL                  signal = {0};
+    TIMESTAMP_TASK_DATA       *task_args = NULL;
     PAL_TASK                *parent_task = NULL;
     PAL_TASK                 *child_task = NULL;
     PAL_TASK_SCHEDULER            *sched = NULL;
     PAL_TASK_POOL             *main_pool = NULL;
     PAL_MEMORY_ARENA_MARKER  global_mark;
     PAL_MEMORY_ARENA_MARKER scratch_mark;
+    pal_uint64_t           timestamps[2]; /* 0 = PARENT, 1 = CHILD */
     pal_usize_t           task_args_size;
+    pal_sint32_t          complete_count;
     PAL_TASKID            parent_task_id;
     PAL_TASKID             child_task_id;
     int                           result;
+
+    pal_uint32_t const        PARENT = 0;
+    pal_uint32_t const         CHILD = 1;
+    pal_uint32_t const    WAIT_COUNT = 2;
 
     result       = TEST_PASS;
     global_mark  = PAL_MemoryArenaMark(global_arena);
@@ -507,6 +594,15 @@ FTest_RunOneThread_NoDeps_WithExternChild_Auto
         result = TEST_FAIL;
         goto cleanup;
     }
+
+    /* initialize the timestamps array to zero */
+    PAL_ZeroMemory(timestamps, sizeof(timestamps));
+    if (CreateSignal(&signal) != 0) {
+        assert(0 && "CreateSignal failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    complete_count = 0;
 
     /* step 1 is to create a task ID for the parent task */
     if (PAL_TaskCreate(main_pool, &parent_task_id, 1, PAL_TASKID_NONE) != 0) {
@@ -531,53 +627,29 @@ FTest_RunOneThread_NoDeps_WithExternChild_Auto
         goto cleanup;
     }
 
-    /* step 2 performs task setup.
-     * PAL_TaskGetData returns three pieces of information to you:
-     * 1. A pointer to the PAL_TASK, which you must fill out.
-     * 2. A pointer to the task-local data buffer, which you can use to specify per-task data.
-     * 3. The maximum number of bytes that can be written to the task-local data buffer.
-     */
+    /* perform task setup for the parent task */
     if ((parent_task = PAL_TaskGetData(main_pool, parent_task_id, &task_args, &task_args_size)) == NULL) {
         assert(0 && "PAL_TaskGetData failed (parent)");
         result = TEST_FAIL;
         goto cleanup;
     }
-    if (task_args == NULL || task_args_size == 0) {
-        assert(0 && "PAL_TaskGetData returned invalid task-local buffer (parent)");
-        result = TEST_FAIL;
-        goto cleanup;
-    }
-    /* ALL fields of PAL_TASK must be set by your code.
-     * PAL_TASK::TaskMain specifies the function to run when the task executes.
-     * PAL_TASK::TaskId specifies the task identifier being assigned to the task.
-     * PAL_TASK::ParentId specifies the task identifier of the parent task. 
-     * The ParentId field is -not- set for you during PAL_TaskCreate; you must set it here.
-     * PAL_TASK::TaskFlags is reserved for future use and should be set to zero.
-     * PAL_TASK::CompletionType indicates how the task will be completed. Usually you set this 
-     * to PAL_TASK_COMPLETION_TYPE_AUTOMATIC, which means that the task system will automatically
-     * call PAL_TaskComplete after TaskMain returns. You can also set it to either one of 
-     * PAL_TASK_COMPLETION_TYPE_INTERNAL, which means that your TaskMain calls PAL_TaskComplete, 
-     * or PAL_TASK_COMPLETION_TYPE_EXTERNAL, which means that some callback outside of the task 
-     * system will call PAL_TaskComplete based on some event, such as an asynchronous I/O event.
-     */
-    parent_task->TaskMain       = FinishTaskMain_Auto;
+    parent_task->TaskMain       = PAL_TaskMain_NoOp;
+    parent_task->TaskComplete   = Task_WriteTimestamp;
     parent_task->TaskId         = parent_task_id;  /* must be the ID supplied to PAL_TaskGetData */
     parent_task->ParentId       = PAL_TASKID_NONE; /* must be the ID supplied as parent_id in PAL_TaskCreate */
-    parent_task->TaskFlags      = 0;
     parent_task->CompletionType = PAL_TASK_COMPLETION_TYPE_AUTOMATIC;
-    parent_task->Reserved       = 0;
-    task_args->Magic     = 0xabadbeef;
-    task_args->Flag      = 0;
+    parent_task->TaskFlags      = 0;
+    task_args->Signal           =&signal;
+    task_args->TsArray          = timestamps;
+    task_args->TsCount          =&complete_count;
+    task_args->TsIndex          = PARENT;
+    task_args->Trigger          = WAIT_COUNT;
 
-    /* step 3 publishes the task, which potentially makes the task ready-to-run.
-     * a task becomes ready-to-run once all of its dependencies have completed. 
-     * dependencies allow you to specify a general ordering in which tasks will 
-     * run; for example, if task A computes some data that task B uses, you would 
-     * make task B dependent on task A, which guarantees that task B will not start
-     * running before task A completes.
+    /* publish the parent task, making it ready to run.
+     * for this test, the parent will run before the child.
      */
     if (PAL_TaskPublish(main_pool, &parent_task_id, 1, NULL, 0) != 0) {
-        assert(0 && "PAL_TaskPublish failed");
+        assert(0 && "PAL_TaskPublish failed (child)");
         result = TEST_FAIL;
         goto cleanup;
     }
@@ -585,19 +657,46 @@ FTest_RunOneThread_NoDeps_WithExternChild_Auto
     /* even though the parent task has been publish, and may have already run, 
      * it should not finish until the child task has finished. set up the child.
      */
-
-    while (task_args->Flag == 0) {
-        Sleep(10);
+    if ((child_task = PAL_TaskGetData(main_pool, child_task_id, &task_args, &task_args_size)) == NULL) {
+        assert(0 && "PAL_TaskGetData failed (child)");
+        result = TEST_FAIL;
+        goto cleanup;
     }
-    Sleep(100);
+    child_task->TaskMain       = PAL_TaskMain_NoOp;
+    child_task->TaskComplete   = Task_WriteTimestamp;
+    child_task->TaskId         = child_task_id;   /* must be the ID supplied to PAL_TaskGetData */
+    child_task->ParentId       = parent_task_id;  /* must be the ID supplied as parent_id in PAL_TaskCreate */
+    child_task->CompletionType = PAL_TASK_COMPLETION_TYPE_AUTOMATIC;
+    child_task->TaskFlags      = 0;
+    task_args->Signal           =&signal;
+    task_args->TsArray          = timestamps;
+    task_args->TsCount          =&complete_count;
+    task_args->TsIndex          = CHILD;
+    task_args->Trigger          = WAIT_COUNT;
+    /* publish the child task to allow it to run */
+    if (PAL_TaskPublish(main_pool, &child_task_id, 1, NULL, 0) != 0) {
+        assert(0 && "PAL_TaskPublish failed (child)");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    /* wait for all tasks to complete */
+    WaitSignal(&signal);
+
+    /* verify that the CHILD completed before the PARENT */
+    if (timestamps[CHILD] >= timestamps[PARENT]) {
+        assert(timestamps[CHILD] < timestamps[PARENT]);
+        result = TEST_FAIL;
+        goto cleanup;
+    }
 
 cleanup:
+    DeleteSignal(&signal);
     DeleteTaskScheduler(sched);
     PAL_MemoryArenaResetToMarker(scratch_arena, scratch_mark);
     PAL_MemoryArenaResetToMarker(global_arena, global_mark);
     return result;
 }
-#endif
 
 int main
 (
@@ -655,8 +754,9 @@ int main
     PAL_MemoryArenaCreate(&global_arena, &global_arena_init);
 
     /* execute functional tests */
-    res = FTest_PermitListAllocFree     (&global_arena, &scratch_arena); printf("FTest_PermitListAllocFree     : %d\r\n", res);
-    res = FTest_RunOneThread_NoDeps_Auto(&global_arena, &scratch_arena); printf("FTest_RunOneThread_NoDeps_Auto: %d\r\n", res);
+    res = FTest_PermitListAllocFree                     (&global_arena, &scratch_arena); printf("FTest_PermitListAllocFree                     : %d\r\n", res);
+    res = FTest_RunOneThread_NoDeps_Auto                (&global_arena, &scratch_arena); printf("FTest_RunOneThread_NoDeps_Auto                : %d\r\n", res);
+    res = FTest_RunOneThread_NoDeps_WithExternChild_Auto(&global_arena, &scratch_arena); printf("FTest_RunOneThread_NoDeps_WithExternChild_Auto: %d\r\n", res);
 
 cleanup_and_exit:
     PAL_HostMemoryRelease(&scratch_alloc);
