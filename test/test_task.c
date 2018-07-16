@@ -137,9 +137,7 @@ Task_WriteTimestamp
     pal_sint32_t          count;
 
     argp->TsArray[argp->TsIndex] = PAL_TimestampInTicks();
-    printf("Task_WriteTimestamp(%u)\r\n", argp->TsIndex);
     if ((count = AtomicIncrement32(argp->TsCount)) == argp->Trigger) {
-        printf("Task_WriteTimestamp(%u) triggers\r\n",argp->TsIndex);
         SignalSignal(argp->Signal);
     }
 }

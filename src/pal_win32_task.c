@@ -154,6 +154,95 @@
     (((_slot) << 16) | (_gen))
 #endif
 
+/* @summary Atomically load a 32-bit unsigned integer value, increment it, and store the result back to the same address.
+ * @param _addr The address containing the value to modify.
+ * @return The resulting incremented value.
+ */
+#ifndef PAL_AtomicIncrement_u32
+#define PAL_AtomicIncrement_u32(_addr)                                         \
+    (pal_uint32_t)_InterlockedIncrement((volatile LONG*)&(_addr))
+#endif
+
+/* @summary Atomically load a 64-bit unsigned integer value, increment it, and store the result back to the same address.
+ * @param _addr The address containing the value to modify.
+ * @return The resulting incremented value.
+ */
+#ifndef PAL_AtomicIncrement_u64
+#define PAL_AtomicIncrement_u64(_addr)                                         \
+    (pal_uint64_t)_InterlockedIncrement64((volatile LONGLONG*)&(_addr))
+#endif
+
+/* @summary Atomically load a 32-bit signed integer value, decrement it, and store the result back to the same address.
+ * @param _addr The address containing the value to modify.
+ * @return The resulting decremented value.
+ */
+#ifndef PAL_AtomicDecrement_s32
+#define PAL_AtomicDecrement_s32(_addr)                                         \
+    (pal_sint32_t)_InterlockedDecrement((volatile LONG*)&(_addr))
+#endif
+
+/* @summary Atomically load a 64-bit unsigned integer value, decrement it, and store the result back to the same address.
+ * @param _addr The address containing the value to modify.
+ * @return The resulting decremented value.
+ */
+#ifndef PAL_AtomicDecrement_u64
+#define PAL_AtomicDecrement_u64(_addr)                                         \
+    (pal_uint64_t)_InterlockedDecrement64((volatile LONGLONG*)&(_addr))
+#endif
+
+/* @summary Atomically load a 64-bit signed integer value, store a new value to the memory location, and return the original value.
+ * @param _addr The address containing the value to modify.
+ * @param _val The value to store at the given address.
+ * @return The value stored at the address prior to the update.
+ */
+#ifndef PAL_AtomicExchange_s64
+#define PAL_AtomicExchange_s64(_addr, _val)                                    \
+    (pal_sint64_t)_InterlockedExchange64((volatile LONGLONG*)&(_addr), (LONGLONG)(_val))
+#endif
+
+/* @summary Atomically load a 64-bit unsigned integer value, store a new value to the memory location, and return the original value.
+ * @param _addr The address containing the value to modify.
+ * @param _val The value to store at the given address.
+ * @return The value stored at the address prior to the update.
+ */
+#ifndef PAL_AtomicExchange_u64
+#define PAL_AtomicExchange_u64(_addr, _val)                                    \
+    (pal_uint64_t)_InterlockedExchange64((volatile LONGLONG*)&(_addr), (LONGLONG)(_val))
+#endif
+
+/* @summary Atomically load a 32-bit unsigned integer value, compare it with an expected value, and if they match, store another value in its place.
+ * @param _addr The address containing the value to modify.
+ * @param _expect The value the caller expects to be stored at the given address.
+ * @param _desire The value the caller wants to store at the given address if the current value matches the expected value.
+ * @return The value that was loaded from the given address.
+ */
+#ifndef PAL_AtomicCompareAndSwap_u32
+#define PAL_AtomicCompareAndSwap_u32(_addr, _expect, _desire)                  \
+    (pal_uint32_t)_InterlockedCompareExchange((volatile LONG*)&(_addr), (LONG)(_desire), (LONG)(_expect))
+#endif
+
+/* @summary Atomically load a 64-bit signed integer value, compare it with an expected value, and if they match, store another value in its place.
+ * @param _addr The address containing the value to modify.
+ * @param _expect The value the caller expects to be stored at the given address.
+ * @param _desire The value the caller wants to store at the given address if the current value matches the expected value.
+ * @return The value that was loaded from the given address.
+ */
+#ifndef PAL_AtomicCompareAndSwap_s64
+#define PAL_AtomicCompareAndSwap_s64(_addr, _expect, _desire)                  \
+    (pal_sint64_t)_InterlockedCompareExchange64((volatile LONGLONG*)&(_addr), (LONGLONG)(_desire), (LONGLONG)(_expect))
+#endif
+
+/* @summary Atomically load a 64-bit unsigned integer value, compare it with an expected value, and if they match, store another value in its place.
+ * @param _addr The address containing the value to modify.
+ * @param _expect The value the caller expects to be stored at the given address.
+ * @param _desire The value the caller wants to store at the given address if the current value matches the expected value.
+ * @return The value that was loaded from the given address.
+ */
+#ifndef PAL_AtomicCompareAndSwap_u64
+#define PAL_AtomicCompareAndSwap_u64(_addr, _expect, _desire)                  \
+    (pal_uint64_t)_InterlockedCompareExchange64((volatile LONGLONG*)&(_addr), (LONGLONG)(_desire), (LONGLONG)(_expect))
+#endif
+
 /* @summary Define the signature of a thread entry point.
  */
 typedef unsigned int (__stdcall *Win32_ThreadMain_Func)(void*);
@@ -304,24 +393,9 @@ PAL_TaskPoolMakeTaskSlotFree /* this only does the return - not the generation u
     pal_uint32_t          generation
 )
 {
-    pal_uint32_t      packed = PAL_TaskSlotPack(slot_index, generation);
-    pal_uint32_t *free_slots = owner_pool->AllocSlotIds;
-    pal_uint64_t   write_pos = owner_pool->SlotFreeCount;
-    pal_uint64_t       value;
-
-    _ReadWriteBarrier(); /* load-acquire for owner_pool->SlotFreeCount */
-
-    for ( ; ; ) {
-        /* write the slot_index to the AllocSlotIds list */
-        free_slots[write_pos & 0xFFFF] = packed;
-        /* attempt to update and 'claim' the free count */
-        if ((value =(pal_uint64_t)_InterlockedCompareExchange64((volatile LONGLONG*)&owner_pool->SlotFreeCount, (LONGLONG)(write_pos+1), (LONGLONG) write_pos)) == write_pos) {
-            /* the count was successfully updated */
-            return;
-        }
-        /* try again with a new write position */
-        write_pos = value;
-    }
+    pal_uint32_t    packed = PAL_TaskSlotPack(slot_index, generation);
+    pal_uint64_t write_pos =(PAL_AtomicIncrement_u64(owner_pool->SlotFreeCount) - 1) & 0xFFFFULL;
+    owner_pool->AllocSlotIds[write_pos] = packed;
 }
 
 /* @summary Return a permits list to the free list for the owning task pool.
@@ -337,23 +411,8 @@ PAL_TaskPoolMakePermitsListFree /* this only does the return - not the generatio
     pal_uint32_t          list_index
 )
 {
-    pal_uint32_t *free_slots = owner_pool->PermitSlotIds;
-    pal_uint64_t   write_pos = owner_pool->PermitFreeCount;
-    pal_uint64_t       value;
-
-    _ReadWriteBarrier(); /* load-acquire for owner_pool->PermitFreeCount */
-
-    for ( ; ; ) {
-        /* write the slot index to the PermitSlotIds list */
-        free_slots[write_pos & 0xFFFF] = list_index;
-        /* attempt to update and 'claim' the free count */
-        if ((value =(pal_uint64_t)_InterlockedCompareExchange64((volatile LONGLONG*)&owner_pool->PermitFreeCount, (LONGLONG)(write_pos+1), (LONGLONG) write_pos)) == write_pos) {
-            /* the free count was successfully updated */
-            return;
-        }
-        /* try again with a new write position */
-        write_pos = value;
-    }
+    pal_uint64_t  write_pos =(PAL_AtomicIncrement_u64(owner_pool->PermitFreeCount) - 1) & 0xFFFFULL;
+    owner_pool->PermitSlotIds[write_pos] = list_index;
 }
 
 /* @summary Commit one or more additional chunks of task slot data, backing it with physical memory.
@@ -439,7 +498,7 @@ PAL_TaskPoolAllocatePermitsLists
         for ( ; ; ) {
             if (alloc_cur == alloc_max) {
                 /* refill the claimed set */
-                alloc_cur  =(pal_uint64_t)_InterlockedExchange64((volatile LONGLONG*) &owner_pool->PermitAllocCount, (LONGLONG) owner_pool->PermitFreeCount);
+                alloc_cur  = PAL_AtomicExchange_u64(owner_pool->PermitAllocCount, owner_pool->PermitFreeCount);
                 alloc_max  = owner_pool->PermitAllocCount;
                 if (alloc_cur == alloc_max) {
                     if (owner_pool->MaxPermitLists < PAL_TASKID_MAX_SLOTS_PER_POOL) {
@@ -502,7 +561,7 @@ PAL_TaskDataPublishPermitsList
              * 2. A concurrent final completion of blocking_task_id on another thread. This operation claims the Permits array and updates the generation of StateTag.
              * 3. A concurrent cancellation of blocking_task_id on another thread. This operation sets the cancel bit of StateTag.
              */
-            if ((value =(pal_uint32_t)_InterlockedCompareExchange((volatile LONG*)&blocking_task->StateTag, (LONG) new_tag, (LONG) state_tag)) == state_tag) {
+            if ((value = PAL_AtomicCompareAndSwap_u32(blocking_task->StateTag, state_tag, new_tag)) == state_tag) {
                 /* the permits list was successfully published */
                 return 1;
             }
@@ -548,7 +607,7 @@ PAL_TaskPoolPushReadyTask
  * @param task_count The number of tasks in the task_list.
  */
 static void
-PAL_TaskPoolPushReadyTaskMulti
+PAL_TaskPoolPushReadyTaskList
 (
     struct PAL_TASK_POOL *worker_pool, 
     PAL_TASKID             *task_list, 
@@ -584,7 +643,7 @@ PAL_TaskPoolTakeReadyTask
     pal_sint64_t  top;
     PAL_TASKID    res = PAL_TASKID_NONE;
 
-    _InterlockedExchange64(&worker_pool->ReadyPrivatePos, pos);
+    PAL_AtomicExchange_s64(worker_pool->ReadyPrivatePos, pos);
     top = worker_pool->ReadyPublicPos;
 
     if (top <= pos) {
@@ -594,7 +653,7 @@ PAL_TaskPoolTakeReadyTask
             return res;
         }
         /* this was the final item in the deque - race a concurrent steal */
-        if (_InterlockedCompareExchange64(&worker_pool->ReadyPublicPos, top+1, top) == top) {
+        if (PAL_AtomicCompareAndSwap_s64(worker_pool->ReadyPublicPos, top, top+1) == top) {
             /* this thread won the race */
             worker_pool->ReadyPrivatePos = top + 1;
             return res;
@@ -629,7 +688,7 @@ PAL_TaskPoolStealReadyTask
     PAL_TASKID    res = PAL_TASKID_NONE;
     if (top < pos) {
         res = stor[top & mask];
-        if (_InterlockedCompareExchange64(&victim_pool->ReadyPublicPos, top+1, top) == top) {
+        if (PAL_AtomicCompareAndSwap_s64(victim_pool->ReadyPublicPos, top, top+1) == top) {
             /* this thread claims the item */
             return res;
         } else {
@@ -645,123 +704,53 @@ PAL_TaskPoolStealReadyTask
  * This function should be called when a worker runs out of work in its local ready-to-run queue.
  * @param scheduler The PAL_TASK_SCHEDULER managing the scheduler state.
  * @param worker_pool The PAL_TASK_POOL owned by the calling thread, which will be parked if no work is available.
- * @param steal_list An array of values to populate with candidate victim pool indices.
- * @param max_steal_list The maximum number of items that can be written to steal_list.
- * @param num_steal_list On return, the number of valid entries in the steal list is stored in this location.
+ * @param steal_list An array of values to populate with candidate victim pool indices. This array should be able to store eight items.
  * @return One of the values of the PAL_TASK_SCHEDULER_PARK_RESULT enumeration.
  */
 static pal_sint32_t
 PAL_TaskSchedulerParkWorker
 (
-    struct PAL_TASK_SCHEDULER *scheduler,
-    struct PAL_TASK_POOL    *worker_pool,
-    pal_uint32_t             *steal_list,
-    pal_uint32_t          max_steal_list,
-    pal_uint32_t         *num_steal_list
+    struct PAL_TASK_SCHEDULER *scheduler, 
+    struct PAL_TASK_POOL    *worker_pool, 
+    pal_uint32_t             *steal_list
 )
 {
-    pal_sint32_t  *est_count = scheduler->TaskPoolERTR;
     pal_uint64_t event_count = scheduler->ReadyEventCount;
-    pal_uint64_t       value = scheduler->ReadyEventCount;
-    pal_uint32_t  pool_count = scheduler->TaskPoolCount;
-    pal_uint32_t     n_steal = 0;
-    pal_sint32_t   THRESHOLD = 1;
-    DWORD            wait_rc = WAIT_OBJECT_0;
-    pal_uint32_t        i, n;
+    PAL_PARKED_WORKER  *slot = NULL;
+    DWORD            wait_rc;
 
-    pal_uint32_t      *stack;
-    pal_sint32_t         tos;
-    pal_uint32_t       index;
-
-    _ReadWriteBarrier();
-    if (max_steal_list > 0) {
-        do {
-            for (i = 0, n = pool_count; i < n; ++i) {
-                if (est_count[i] > THRESHOLD) {
-                    steal_list[n_steal++] = i;
-                    if (n_steal == max_steal_list)
-                        break;
-                }
-            }
-            if (n_steal == 0) {
-                if ((value = (pal_uint64_t)_InterlockedCompareExchange64((volatile LONGLONG*) &scheduler->ReadyEventCount, (LONGLONG) event_count, (LONGLONG) event_count)) == event_count) {
-                    /* no events have been published, and we didn't find any victim candidates */
-                    goto park_thread;
-                }
-            }
-        } while (n_steal == 0);
-    }
-    PAL_Assign(num_steal_list, n_steal);
-    return PAL_TASK_SCHEDULER_PARK_RESULT_TRY_STEAL;
-
-park_thread:
-    index = worker_pool->PoolIndex;
-    stack = scheduler->ParkedPoolIds;
-    tos   = scheduler->ParkedPoolToS;
-    _ReadWriteBarrier(); /* load-acquire on ParkedPoolToS */
-    for ( ; ; ) {
-        stack[tos] = index;
-        if (( tos  =(pal_sint32_t)_InterlockedCompareExchange((volatile LONG*)&scheduler->ParkedPoolToS, tos+1, tos)) == tos) {
+    if (PAL_AtomicExchange_u64(worker_pool->ReadyEventCount, scheduler->ReadyEventCount) != event_count) {
+        /* one or more tasks have been published - attempt to steal work from another thread */
+        PAL_CopyMemory(steal_list, scheduler->StealPoolSet, sizeof(scheduler->StealPoolSet));
+        return PAL_TASK_SCHEDULER_PARK_RESULT_TRY_STEAL;
+    } else {
+        AcquireSRWLockExclusive(&scheduler->ParkStateLock);
+        /* make the park visible to wake operations */
+        PAL_AtomicIncrement_u64(scheduler->ParkEventCount);
+        /* prepare to park the worker thread */
+        slot = &scheduler->ParkedWorkers[scheduler->ParkedWorkerCount];
+        slot->ParkSemaphore = worker_pool->ParkSemaphore;
+        slot->WakeupTaskId  =&worker_pool->WakeupTaskId;
+        /* double-check that no tasks have been published */
+        if (PAL_AtomicExchange_u64(worker_pool->ReadyEventCount, scheduler->ReadyEventCount) == event_count) {
+            /* no task has been published where the waker hasn't seen the park - put the worker to sleep */
+            scheduler->ParkedWorkerCount++;
+            ReleaseSRWLockExclusive(&scheduler->ParkStateLock);
             if ((wait_rc = WaitForSingleObject(worker_pool->ParkSemaphore, INFINITE)) == WAIT_OBJECT_0) {
                 if (scheduler->ShutdownSignal) {
-                    /* woken due to shutdown */
-                    PAL_Assign(num_steal_list, 0);
                     return PAL_TASK_SCHEDULER_PARK_RESULT_SHUTDOWN;
                 } else {
-                    /* woken due to work item */
-                    PAL_Assign(num_steal_list, 0);
                     return PAL_TASK_SCHEDULER_PARK_RESULT_WAKE_TASK;
                 }
             } else {
-                /* some error occurred while waiting */
-                PAL_Assign(num_steal_list, 0);
+                /* an error occurred during the wait */
                 return PAL_TASK_SCHEDULER_PARK_RESULT_SHUTDOWN;
             }
-        }
-    }
-}
-
-/* @summary Potentially wake up a waiting thread to process a ready-to-run task.
- * If no workers are waiting, the task is queued for later processing.
- * This function should be called when a thread makes a task ready-to-run via a publish or complete operation.
- * @param scheduler The PAL_TASK_SCHEDULER managing the scheduler state.
- * @param worker_pool The PAL_TASK_POOL owned by the calling thread, which executed the publish or complete operation.
- * @param give_task The identifier of the task that is ready-to-run.
- * @return One of the values of the PAL_TASK_SCHEDULER_WAKE_RESULT enumeration.
- */
-static pal_sint32_t
-PAL_TaskSchedulerWakeWorker /* to be called when a worker makes a task ready-to-run via publish or complete */
-(
-    struct PAL_TASK_SCHEDULER *scheduler,
-    struct PAL_TASK_POOL    *worker_pool,
-    PAL_TASKID                 give_task
-)
-{
-    pal_uint32_t *stack = scheduler->ParkedPoolIds;
-    pal_sint32_t    tos = scheduler->ParkedPoolToS;
-    pal_uint32_t    idx;
-    pal_sint32_t  value;
-
-    _ReadWriteBarrier();
-
-    for ( ; ; ) {
-        if (tos == 0) {
-            /* no workers are waiting; push the task onto the local ready-to-run queue */
-            PAL_TaskPoolPushReadyTask(worker_pool, give_task);
-            scheduler->TaskPoolERTR[worker_pool->PoolIndex]++;
-            _InterlockedIncrement64((volatile LONGLONG*)&scheduler->ReadyEventCount);
-            return PAL_TASK_SCHEDULER_WAKE_RESULT_QUEUED;
-        }
-        idx = stack[tos-1];
-        if ((value =(pal_sint32_t)_InterlockedCompareExchange((volatile LONG*)&scheduler->ParkedPoolToS, tos-1, tos)) == tos) {
-            /* successfully popped a worker, assign to mail slot */
-            PAL_TASK_POOL *woken  = scheduler->TaskPoolList[idx];
-            woken->WakeupTaskId   = give_task;
-            ReleaseSemaphore(woken->ParkSemaphore, 1, NULL);
-            return PAL_TASK_SCHEDULER_WAKE_RESULT_WAKEUP;
         } else {
-            /* try again */
-            tos = value;
+            /* a task has been published during the park operation - don't actually sleep */
+            ReleaseSRWLockExclusive(&scheduler->ParkStateLock);
+            PAL_CopyMemory(steal_list, scheduler->StealPoolSet, sizeof(scheduler->StealPoolSet));
+            return PAL_TASK_SCHEDULER_PARK_RESULT_TRY_STEAL;
         }
     }
 }
@@ -769,7 +758,6 @@ PAL_TaskSchedulerWakeWorker /* to be called when a worker makes a task ready-to-
 /* @summary Potentially wake up one or more waiting threads to process ready-to-run tasks.
  * If no workers are waiting, or more tasks are available than workers are waiting, tasks are queued for later processing.
  * This function should be called when a thread makes one or more tasks ready-to-run via a publish or complete operation.
- * This function performs at most (#workers + 2) atomic operations.
  * @param scheduler The PAL_TASK_SCHEDULER managing the scheduler state.
  * @param worker_pool The PAL_TASK_POOL owned by the calling thread, which executed the publish or complete operation.
  * @param give_tasks The array of ready-to-run task identifiers.
@@ -777,7 +765,7 @@ PAL_TaskSchedulerWakeWorker /* to be called when a worker makes a task ready-to-
  * @return One of the values of the PAL_TASK_SCHEDULER_WAKE_RESULT enumeration.
  */
 static pal_sint32_t
-PAL_TaskSchedulerWakeWorkerMulti
+PAL_TaskSchedulerWakeWorkers
 (
     struct PAL_TASK_SCHEDULER *scheduler, 
     struct PAL_TASK_POOL    *worker_pool, 
@@ -785,43 +773,49 @@ PAL_TaskSchedulerWakeWorkerMulti
     pal_uint32_t              task_count
 )
 {
-    PAL_TASK_POOL **pools = scheduler->TaskPoolList;
-    pal_uint32_t   *stack = scheduler->ParkedPoolIds;
-    pal_sint32_t      tos = scheduler->ParkedPoolToS;
-    pal_uint32_t    n_pop = 0;
-    pal_uint32_t  n_given = 0;
-    pal_uint32_t  n_queue;
-    pal_sint32_t    value;
-    pal_uint32_t  pop[16];
+    pal_uint32_t  pool_index = worker_pool->PoolIndex;
+    pal_uint64_t event_count = scheduler->ParkEventCount;
+    pal_uint64_t  slot_index;
+    pal_uint32_t    n_queued;
+    pal_uint32_t     n_woken;
+    pal_uint32_t     i, t, w;
 
-    _ReadWriteBarrier();
+    /* claim a slot in StealPoolSet */
+    slot_index = (PAL_AtomicIncrement_u64(scheduler->ReadyEventCount) - 1) & 7;
+    scheduler->StealPoolSet[slot_index] = pool_index;
 
-    while (n_given < task_count) {
-        /* pop as many waiting threads as possible from park stack */
-        while (tos > 0 && n_pop < PAL_CountOf(pop) && (n_given + n_pop) < task_count) {
-            pop[n_pop] = stack[tos-1]; /* the park stack is non-empty, race to claim an item */
-            if ((value =(pal_sint32_t)_InterlockedCompareExchange((volatile LONG*)&scheduler->ParkedPoolToS, tos-1, tos)) == tos) {
-                n_pop++;
-            } else {
-                tos = value;
-            }
-        }
-        if (n_pop == 0) {
-            /* move the remaining tasks to the RTR queue */
-            n_queue = task_count - n_given;
-            PAL_TaskPoolPushReadyTaskMulti(worker_pool, &give_tasks[n_given], task_count-n_given);
-            scheduler->TaskPoolERTR[worker_pool->PoolIndex]      += n_queue;
-            _InterlockedIncrement64((volatile LONGLONG*)&scheduler->ReadyEventCount);
+    /* determine whether to wake up parked threads or not */
+    if (PAL_AtomicExchange_u64(worker_pool->ParkEventCount, scheduler->ParkEventCount) == event_count) {
+        /* no threads have gone to sleep since this thread last made work available */
+        if (worker_pool->ParkedWorkerCount == 0) {
+            /* no threads waiting - queue all tasks */
+            PAL_TaskPoolPushReadyTaskList(worker_pool, give_tasks, task_count);
             return PAL_TASK_SCHEDULER_WAKE_RESULT_QUEUED;
-        } else {
-            /* hand out tasks to waiting threads and wake them up */
-            while (n_pop != 0) {
-                PAL_TASK_POOL *woken = pools[pop[n_pop--]];
-                woken->WakeupTaskId  = give_tasks[n_given++];
-                ReleaseSemaphore(woken->ParkSemaphore, 1, NULL);
-            }
         }
     }
+    /* potentially wake up worker threads */
+    AcquireSRWLockExclusive(&scheduler->ParkStateLock); {
+        worker_pool->ParkEventCount    = scheduler->ParkEventCount;
+        worker_pool->ParkedWorkerCount = scheduler->ParkedWorkerCount;
+        if (task_count > scheduler->ParkedWorkerCount) {
+            /* wake up all parked worker threads */
+            n_woken    = scheduler->ParkedWorkerCount;
+            n_queued   = task_count - scheduler->ParkedWorkerCount;
+            scheduler->ParkedWorkerCount = 0;
+            /* queue tasks to hopefully prevent other threads from parking */
+            PAL_TaskPoolPushReadyTaskList(worker_pool, give_tasks, n_queued);
+        } else {
+            /* wake up a portion of parked worker threads */
+            scheduler->ParkedWorkerCount -= task_count;
+            n_woken    = task_count;
+            n_queued   = 0;
+        }
+        for (i = 0, t = n_queued, w = n_woken - 1; i < n_woken; ++i) {
+            PAL_PARKED_WORKER *worker = &scheduler->ParkedWorkers[w--];
+            PAL_Assign(worker->WakeupTaskId, give_tasks[t++]);
+            ReleaseSemaphore(worker->ParkSemaphore, 1, NULL);
+        }
+    } ReleaseSRWLockExclusive(&scheduler->ParkStateLock);
     return PAL_TASK_SCHEDULER_WAKE_RESULT_WAKEUP;
 }
 
@@ -859,7 +853,6 @@ PAL_TaskSchedulerStealWork
         stolen_task = PAL_TaskPoolStealReadyTask(victim_pool);
         if (stolen_task != PAL_TASKID_NONE) {
             /* the steal was successful */
-            _InterlockedDecrement((volatile LONG*)&scheduler->TaskPoolERTR[steal_list[i]]);
             return stolen_task;
         }
     }
@@ -887,7 +880,7 @@ PAL_TaskPoolCompleteTask
     pal_uint32_t               generation
 )
 {
-    if (_InterlockedDecrement((volatile LONG*)&task_data->WorkCount) == -1) {
+    if (PAL_AtomicDecrement_s32(task_data->WorkCount) == -1) {
         /* this task should transition to the completed state.
          * no other thread can process the completion, but this thread may have 
          * to race other threads that might be updating the task permits.
@@ -910,7 +903,7 @@ PAL_TaskPoolCompleteTask
             /* since we have the task data, reset the work count for when this slot is reused */
             task_data->WorkCount = 0;
             /* atomically update the state tag, which transitions the task state to completed */
-            if ((value =(pal_uint32_t)_InterlockedCompareExchange((volatile LONG*)&task_data->StateTag, (LONG) done_tag, (LONG) state_tag)) == state_tag) {
+            if ((value = PAL_AtomicCompareAndSwap_u32(task_data->StateTag, state_tag, done_tag)) == state_tag) {
                 /* the task is transitioned to the completed state */
                 break;
             }
@@ -935,13 +928,12 @@ PAL_TaskPoolCompleteTask
         /* process any associated permits lists */
         for (i = 0, num_permits = PAL_TaskStateTagGetPermitsCount(state_tag); i < num_permits; ++i) {
             PAL_PERMITS_LIST *p = task_data->Permits[i];
-            if (_InterlockedIncrement((volatile LONG*)&p->WaitCount) == 0) {
+            if (PAL_AtomicIncrement_u32(p->WaitCount) == 0) {
                 /* all tasks in p->TaskList are now ready-to-run */
                 PAL_TASK_POOL *permit_owner = scheduler->TaskPoolList[p->PoolIndex];
                 pal_uint32_t   permit_index = PAL_TaskPoolGetSlotIndexForPermitList(permit_owner, p);
-                for (j = 0; p->TaskList[j] != PAL_TASKID_NONE; ++j) {
-                    PAL_TaskSchedulerWakeWorker(scheduler, ctx->CallbackPool, p->TaskList[j]);
-                }
+                for (j = 0; p->TaskList[j] != PAL_TASKID_NONE; ++j) { /* empty */ }
+                PAL_TaskSchedulerWakeWorkers(scheduler, ctx->CallbackPool, p->TaskList, j);
                 PAL_TaskPoolMakePermitsListFree(permit_owner, permit_index);
             }
         }
@@ -973,14 +965,14 @@ PAL_CpuWorkerThreadMain
     pal_sint32_t        pool_type_id = PAL_TASK_POOL_TYPE_ID_CPU_WORKER;
     pal_uint32_t     pool_bind_flags = PAL_TASK_POOL_BIND_FLAGS_NONE;
     pal_sint32_t         wake_reason = PAL_TASK_SCHEDULER_PARK_RESULT_WAKE_TASK;
-    pal_uint32_t         steal_count = 0;
+    pal_uint32_t         steal_count = 8;
     pal_uint32_t         steal_index = 0;
     PAL_TASK_CALLBACK_CONTEXT   exec;
     PAL_TASK_ARGS          task_args;
     pal_uint32_t          pool_index;
     pal_uint32_t          slot_index;
     pal_uint32_t          generation;
-    pal_uint32_t       steal_list[4];
+    pal_uint32_t       steal_list[8];
 
     /* set the thread name for diagnostics tools */
     PAL_ThreadSetName("CPU Worker");
@@ -1010,7 +1002,7 @@ PAL_CpuWorkerThreadMain
     __try {
         while (scheduler->ShutdownSignal == 0) {
             /* wait for work to become available */
-            switch ((wake_reason = PAL_TaskSchedulerParkWorker(scheduler, thread_pool, steal_list, PAL_CountOf(steal_list), &steal_count))) {
+            switch ((wake_reason = PAL_TaskSchedulerParkWorker(scheduler, thread_pool, steal_list))) {
                 case PAL_TASK_SCHEDULER_PARK_RESULT_SHUTDOWN:
                     { current_task = PAL_TASKID_NONE;
                     } break;
@@ -1251,14 +1243,13 @@ PAL_TaskSchedulerQueryMemorySize
     /* determine the memory requirement for the scheduler */
     reserve_size  = PAL_AllocationSizeType (PAL_TASK_SCHEDULER);
     reserve_size += PAL_AllocationSizeArray(PAL_TASK_POOL*         , count_info->TotalPoolCount); /* TaskPoolList  */
-    reserve_size += PAL_AllocationSizeArray(pal_sint32_t           , count_info->TotalPoolCount); /* TaskPoolERTR  */
     reserve_size += PAL_AllocationSizeArray(pal_uint32_t           , count_info->TotalPoolCount); /* PoolThreadId  */
-    reserve_size += PAL_AllocationSizeArray(pal_uint32_t           , init->CpuWorkerThreadCount); /* ParkedPoolIds */
     reserve_size += PAL_AllocationSizeArray(PAL_TASK_POOL_FREE_LIST, init->PoolTypeCount);        /* PoolFreeList  */
     reserve_size += PAL_AllocationSizeArray(pal_sint32_t           , init->PoolTypeCount);        /* PoolTypeIds   */
     reserve_size += PAL_AllocationSizeArray(unsigned int           , thread_count);               /* OsWorkerThreadIds */
     reserve_size += PAL_AllocationSizeArray(HANDLE                 , thread_count);               /* OsWorkerThreadHandles */
     reserve_size += PAL_AllocationSizeArray(HANDLE                 , init->CpuWorkerThreadCount); /* WorkerParkSemaphores */
+    reserve_size += PAL_AllocationSizeArray(PAL_PARKED_WORKER      , init->CpuWorkerThreadCount); /* ParkedWorkers */
     /* ... */
     reserve_size  = PAL_AlignUp(reserve_size, page_size);
     commit_size   =(pal_uint32_t) reserve_size;
@@ -1355,27 +1346,31 @@ PAL_TaskSchedulerCreate
     }
     pool_base                       = base_ptr + sched_size.TaskPoolOffset;
     scheduler                       = PAL_MemoryArenaAllocateHostType (&scheduler_arena, PAL_TASK_SCHEDULER);
-    scheduler->TaskPoolList         = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, PAL_TASK_POOL*, counts.TotalPoolCount);
-    scheduler->TaskPoolERTR         = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, pal_sint32_t  , counts.TotalPoolCount);
-    scheduler->PoolThreadId         = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, pal_uint32_t  , counts.TotalPoolCount);
+    scheduler->TaskPoolList         = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, PAL_TASK_POOL*         , counts.TotalPoolCount);
+    scheduler->PoolThreadId         = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, pal_uint32_t           , counts.TotalPoolCount);
     scheduler->TaskPoolCount        = counts.TotalPoolCount;
     scheduler->PoolTypeCount        = init->PoolTypeCount;
-    scheduler->ParkedPoolIds        = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, pal_uint32_t           , init->CpuWorkerThreadCount);
     scheduler->PoolFreeList         = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, PAL_TASK_POOL_FREE_LIST, init->PoolTypeCount);
     scheduler->PoolTypeIds          = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, pal_sint32_t           , init->PoolTypeCount);
     scheduler->TaskPoolBase         = pool_base;
-    scheduler->OsWorkerThreadIds    = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, unsigned int  , worker_thread_count);
-    scheduler->OsWorkerThreadHandles= PAL_MemoryArenaAllocateHostArray(&scheduler_arena, HANDLE        , worker_thread_count);
-    scheduler->WorkerParkSemaphores = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, HANDLE        , init->CpuWorkerThreadCount);
     scheduler->IoCompletionPort     = iocp;
-    scheduler->Reserved1            = 0;
-    scheduler->Reserved2            = 0;
-    scheduler->ShutdownSignal       = 0;
     scheduler->CpuWorkerCount       = init->CpuWorkerThreadCount;
     scheduler->AioWorkerCount       = init->AioWorkerThreadCount;
+    scheduler->OsWorkerThreadIds    = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, unsigned int           , worker_thread_count);
+    scheduler->OsWorkerThreadHandles= PAL_MemoryArenaAllocateHostArray(&scheduler_arena, HANDLE                 , worker_thread_count);
+    scheduler->WorkerParkSemaphores = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, HANDLE                 , init->CpuWorkerThreadCount);
+    scheduler->ShutdownSignal       = 0;
     scheduler->ActiveThreadCount    = 0;
+    scheduler->Reserved1            = 0;
+    scheduler->Reserved2            = 0;
+    scheduler->Reserved3            = 0;
+    scheduler->Reserved4            = 0;
     scheduler->ReadyEventCount      = 0;
-    scheduler->ParkedPoolToS        = 0;
+    scheduler->ParkEventCount       = 0;
+    scheduler->ParkedWorkers        = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, PAL_PARKED_WORKER      , init->CpuWorkerThreadCount);
+    scheduler->ParkedWorkerCount    = 0;
+    scheduler->Reserved5            = 0;
+    InitializeSRWLock(&scheduler->ParkStateLock);
 
     /* initialize the task pools */
     for (type_index = 0, type_count = init->PoolTypeCount; type_index < type_count; ++type_index) {
@@ -1389,6 +1384,7 @@ PAL_TaskSchedulerCreate
         commit_size  = PAL_AlignUp(commit_size,page_size);
 
         /* initialize the free list for this type */
+        InitializeSRWLock(&scheduler->PoolFreeList[type_index].TypeLock);
         scheduler->PoolFreeList[type_index].FreeListHead  = NULL;
         scheduler->PoolFreeList[type_index].PoolTypeId    = type->PoolTypeId;
         scheduler->PoolFreeList[type_index].PoolTypeFree  = 0;
@@ -1451,7 +1447,6 @@ PAL_TaskSchedulerCreate
             pool->ReadyPrivatePos   = 0;
             /* update the scheduler pool binding table */
             scheduler->TaskPoolList[global_pool_index] = pool;
-            scheduler->TaskPoolERTR[global_pool_index] = 0;
             scheduler->PoolThreadId[global_pool_index] = 0;
             /* push the task pool onto the free list */
             scheduler->PoolFreeList[type_index].FreeListHead = pool;
@@ -1622,15 +1617,18 @@ PAL_TaskSchedulerAcquireTaskPool
         }
 
         /* initialize the queues and counters */
-        task_pool->SlotAllocNext    = 0;
-        task_pool->PermitAllocNext  = 0;
-        task_pool->WakeupTaskId     = PAL_TASKID_NONE;
-        task_pool->SlotAllocCount   = 0;
-        task_pool->PermitAllocCount = 0;
-        task_pool->ReadyPublicPos   = 0;
-        task_pool->ReadyPrivatePos  = 0;
-       _InterlockedExchange64((volatile LONGLONG*) &task_pool->SlotFreeCount  , (LONGLONG) task_pool->MaxTaskSlots);
-       _InterlockedExchange64((volatile LONGLONG*) &task_pool->PermitFreeCount, (LONGLONG) task_pool->MaxPermitLists);
+        task_pool->SlotAllocNext      = 0;
+        task_pool->PermitAllocNext    = 0;
+        task_pool->WakeupTaskId       = PAL_TASKID_NONE;
+        task_pool->SlotAllocCount     = 0;
+        task_pool->PermitAllocCount   = 0;
+        task_pool->ParkEventCount     =~0ULL;
+        task_pool->ReadyEventCount    =~0ULL;
+        task_pool->ParkedWorkerCount  =~0ULL;
+        task_pool->ReadyPublicPos     = 0;
+        task_pool->ReadyPrivatePos    = 0;
+        PAL_AtomicExchange_u64(task_pool->SlotFreeCount  , task_pool->MaxTaskSlots);
+        PAL_AtomicExchange_u64(task_pool->PermitFreeCount, task_pool->MaxPermitLists);
     }
     return task_pool;
 }
@@ -1729,7 +1727,7 @@ PAL_TaskCreate
         for ( ; ; ) {
             if (alloc_cur == alloc_max) {
                 /* refill the claimed set */
-                alloc_cur =(pal_uint64_t)_InterlockedExchange64((volatile LONGLONG*) &thread_pool->SlotAllocCount, (LONGLONG) thread_pool->SlotFreeCount);
+                alloc_cur = PAL_AtomicExchange_u64(thread_pool->SlotAllocCount, thread_pool->SlotFreeCount);
                 alloc_max = thread_pool->SlotAllocCount;
                 if (alloc_cur == alloc_max) {
                     if (thread_pool->MaxTaskSlots < PAL_TASKID_MAX_SLOTS_PER_POOL) {
@@ -1814,9 +1812,7 @@ PAL_TaskPublish
 
     if (dependency_count == 0) {
         /* these tasks are immediately ready-to-run */
-        for (i = 0; i < task_count; ++i) {
-            PAL_TaskSchedulerWakeWorker(scheduler, thread_pool, task_id_list[i]);
-        }
+        PAL_TaskSchedulerWakeWorkers(scheduler, thread_pool, task_id_list, task_count);
     } else {
         /* allocate a permits list from thread_pool */
         PAL_TASKID       *start_task = task_id_list;
@@ -1889,9 +1885,7 @@ PAL_TaskPublish
 
         if (wait_count == 0) {
             /* all dependencies completed */
-            for (i = 0; i < task_count; ++i) {
-                PAL_TaskSchedulerWakeWorker(scheduler, thread_pool, task_id_list[i]);
-            }
+            PAL_TaskSchedulerWakeWorkers(scheduler, thread_pool, task_id_list, task_count);
         }
     }
     return 0;
