@@ -984,6 +984,7 @@ PAL_CpuWorkerThreadMain
     }
     /* set the park semaphore for the task pool bound to the thread */
     thread_pool->ParkSemaphore = init->ParkSemaphore;
+    PAL_ZeroMemory(steal_list, sizeof(steal_list));
 
     /* run the application-supplied initialization function */
     if (init->ThreadInit(scheduler, thread_pool, init->CreateContext, &thread_ctx) != 0) {
@@ -1033,7 +1034,10 @@ PAL_CpuWorkerThreadMain
                  * work items in the ready-to-run deque for this thread.
                  * keep executing tasks until the queue drains.
                  */
-                current_task = PAL_TaskPoolTakeReadyTask(thread_pool);
+                if ((current_task = PAL_TaskPoolTakeReadyTask(thread_pool)) == PAL_TASKID_NONE) {
+                    /* try and steal some work */
+                    current_task = PAL_TaskSchedulerStealWork(scheduler, steal_list, steal_count, steal_index, &steal_index);
+                }
             }
         }
     }
@@ -1853,7 +1857,7 @@ PAL_TaskPublish
 
             list_array[i]->WaitCount =-(pal_sint32_t) dependency_count;
             list_array[i]->PoolIndex =  pool_index;
-            PAL_CopyMemory(list_array[i]->TaskList, start_task, num_task);
+            PAL_CopyMemory(list_array[i]->TaskList, start_task, num_task * sizeof(PAL_TASKID));
 
             start_task   += PAL_TASK_MAX_PERMITS_PER_LIST;
             remain_count -= num_task;
