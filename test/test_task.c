@@ -114,6 +114,15 @@ SignalSignal
     SetEvent(signal->Event);
 }
 
+static void
+ResetSignal
+(
+    struct WIN32_SIGNAL *signal
+)
+{
+    ResetEvent(signal->Event);
+}
+
 static pal_sint32_t
 AtomicIncrement32
 (
@@ -140,6 +149,73 @@ Task_WriteTimestamp
     if ((count = AtomicIncrement32(argp->TsCount)) == argp->Trigger) {
         SignalSignal(argp->Signal);
     }
+}
+
+/* @summary Define the entry point or completion callback that writes the current timestamp into an array.
+ * This can be used to evaluate the execution or completion order of a set of tasks.
+ * @param args Data associated with task execution. TaskArguments points to a TIMESTAMP_TASK_DATA.
+ */
+static void
+Task_CheckSignal
+(
+    struct PAL_TASK_ARGS *args
+)
+{
+    TIMESTAMP_TASK_DATA   *argp  =(TIMESTAMP_TASK_DATA*) args->TaskArguments;
+    pal_sint32_t          count;
+
+    if ((count = AtomicIncrement32(argp->TsCount)) == argp->Trigger) {
+        SignalSignal(argp->Signal);
+    }
+}
+
+static void
+Task_SpawnChildInternal_WriteTimestamp
+(
+    struct PAL_TASK_ARGS *args
+)
+{
+    TIMESTAMP_TASK_DATA   *argp =(TIMESTAMP_TASK_DATA*) args->TaskArguments;
+    TIMESTAMP_TASK_DATA *c_args = NULL;
+    PAL_TASK_POOL  *thread_pool = args->CallbackPool;
+    PAL_TASK             *child = NULL;
+    pal_usize_t     c_args_size = 0;
+    PAL_TASKID         child_id = PAL_TASKID_NONE;
+
+    if (PAL_TaskCreate(thread_pool, &child_id, 1, args->TaskId) != 0) {
+        assert(0 && "PAL_TaskCreate failed (child, internal)");
+        goto error;
+    }
+    if ((child = PAL_TaskGetData(thread_pool, child_id, &c_args, &c_args_size)) == NULL) {
+        assert(0 && "PAL_TaskGetData failed (child, internal)");
+        goto error;
+    }
+    if (c_args == NULL || c_args_size == 0) {
+        assert(0 && "PAL_TaskGetData returned invalid task-local buffer (child, internal)");
+        goto error;
+    }
+    child->TaskMain       = PAL_TaskMain_NoOp;
+    child->TaskComplete   = Task_WriteTimestamp;
+    child->TaskId         = child_id;     /* must be the ID supplied to PAL_TaskGetData */
+    child->ParentId       = args->TaskId; /* must be the ID supplied as parent_id in PAL_TaskCreate */
+    child->CompletionType = PAL_TASK_COMPLETION_TYPE_AUTOMATIC;
+    child->TaskFlags      = 0;
+    c_args->Signal        = argp->Signal;
+    c_args->TsArray       = argp->TsArray;
+    c_args->TsCount       = argp->TsCount;
+    c_args->TsIndex       = argp->TsIndex+1;
+    c_args->Trigger       = argp->Trigger;
+    if (PAL_TaskPublish(thread_pool, &child_id, 1, NULL, 0) != 0) {
+        assert(0 && "PAL_TaskPublish failed (child, internal)");
+        goto error;
+    }
+    /* don't wait for the child to complete */
+    return;
+
+error:
+    /* TODO: need a better way to signal errors */
+    SignalSignal(argp->Signal);
+    return;
 }
 
 #if 0
@@ -257,7 +333,7 @@ CreateTaskScheduler
                                       PAL_TASK_POOL_FLAG_PUBLISH | 
                                       PAL_TASK_POOL_FLAG_EXECUTE | 
                                       PAL_TASK_POOL_FLAG_COMPLETE;
-    pool_types[0].PreCommitTasks    = 1024;
+    pool_types[0].PreCommitTasks    = 8192;
 
     /* the AIO workers are intended to run on hyperthreads and not be very active */
     pool_types[1].PoolTypeId        = PAL_TASK_POOL_TYPE_ID_AIO_WORKER;
@@ -278,7 +354,7 @@ CreateTaskScheduler
                                       PAL_TASK_POOL_FLAG_EXECUTE  | 
                                       PAL_TASK_POOL_FLAG_COMPLETE | 
                                       PAL_TASK_POOL_FLAG_STEAL;
-        pool_types[2].PreCommitTasks= 1024;
+        pool_types[2].PreCommitTasks= 8192;
     } else {
         /* running on a single-core system */
         pool_types[2].PoolTypeId    = PAL_TASK_POOL_TYPE_ID_CPU_WORKER;
@@ -288,7 +364,7 @@ CreateTaskScheduler
                                       PAL_TASK_POOL_FLAG_EXECUTE  | 
                                       PAL_TASK_POOL_FLAG_COMPLETE | 
                                       PAL_TASK_POOL_FLAG_STEAL;
-        pool_types[2].PreCommitTasks= 1024;
+        pool_types[2].PreCommitTasks= 8192;
     }
 
     /* define the task scheduler configuration */
@@ -682,11 +758,487 @@ FTest_RunOneThread_NoDeps_WithExternChild_Auto
     WaitSignal(&signal);
 
     /* verify that the CHILD completed before the PARENT */
-    if (timestamps[CHILD] >= timestamps[PARENT]) {
+    if (timestamps[CHILD] > timestamps[PARENT]) {
         assert(timestamps[CHILD] < timestamps[PARENT]);
         result = TEST_FAIL;
         goto cleanup;
     }
+
+cleanup:
+    DeleteSignal(&signal);
+    DeleteTaskScheduler(sched);
+    PAL_MemoryArenaResetToMarker(scratch_arena, scratch_mark);
+    PAL_MemoryArenaResetToMarker(global_arena, global_mark);
+    return result;
+}
+
+/* @summary Create and run a two tasks, a parent and a child, through to completion.
+ * The tasks are set to autocomplete. The child should always finish before the parent.
+ * @param global_arena The global application memory arena.
+ * @param scratch_arena The application scratch memory arena.
+ * @return Either TEST_PASS or TEST_FAIL.
+ */
+static int
+FTest_RunOneThread_NoDeps_WithInternChild_Auto
+(
+    struct PAL_MEMORY_ARENA  *global_arena, 
+    struct PAL_MEMORY_ARENA *scratch_arena
+)
+{
+    WIN32_SIGNAL                  signal = {0};
+    TIMESTAMP_TASK_DATA       *task_args = NULL;
+    PAL_TASK                *parent_task = NULL;
+    PAL_TASK_SCHEDULER            *sched = NULL;
+    PAL_TASK_POOL             *main_pool = NULL;
+    PAL_MEMORY_ARENA_MARKER  global_mark;
+    PAL_MEMORY_ARENA_MARKER scratch_mark;
+    pal_uint64_t           timestamps[2]; /* 0 = PARENT, 1 = CHILD */
+    pal_usize_t           task_args_size;
+    pal_sint32_t          complete_count;
+    PAL_TASKID            parent_task_id;
+    int                           result;
+
+    pal_uint32_t const        PARENT = 0;
+    pal_uint32_t const         CHILD = 1;
+    pal_uint32_t const    WAIT_COUNT = 2;
+
+    result       = TEST_PASS;
+    global_mark  = PAL_MemoryArenaMark(global_arena);
+    scratch_mark = PAL_MemoryArenaMark(scratch_arena);
+
+    if ((sched = CreateTaskScheduler(FORCE_SINGLE_CORE, 0)) == NULL) {
+        assert(0 && "CreateTaskScheduler failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    if ((main_pool = PAL_TaskSchedulerAcquireTaskPool(sched, PAL_TASK_POOL_TYPE_ID_MAIN, 0)) == NULL) {
+        assert(0 && "PAL_TaskSchedulerAcquireTaskPool(MAIN) failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    /* initialize the timestamps array to zero */
+    PAL_ZeroMemory(timestamps, sizeof(timestamps));
+    if (CreateSignal(&signal) != 0) {
+        assert(0 && "CreateSignal failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    complete_count = 0;
+
+    /* step 1 is to create a task ID for the parent task */
+    if (PAL_TaskCreate(main_pool, &parent_task_id, 1, PAL_TASKID_NONE) != 0) {
+        assert(0 && "PAL_TaskCreate failed (parent)");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    if (PAL_TaskIdGetValid(parent_task_id) == 0) {
+        assert(0 && "PAL_TaskCreate returned an invalid task ID (parent)");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    /* perform task setup for the parent task */
+    if ((parent_task = PAL_TaskGetData(main_pool, parent_task_id, &task_args, &task_args_size)) == NULL) {
+        assert(0 && "PAL_TaskGetData failed (parent)");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    parent_task->TaskMain       = Task_SpawnChildInternal_WriteTimestamp;
+    parent_task->TaskComplete   = Task_WriteTimestamp;
+    parent_task->TaskId         = parent_task_id;  /* must be the ID supplied to PAL_TaskGetData */
+    parent_task->ParentId       = PAL_TASKID_NONE; /* must be the ID supplied as parent_id in PAL_TaskCreate */
+    parent_task->CompletionType = PAL_TASK_COMPLETION_TYPE_AUTOMATIC;
+    parent_task->TaskFlags      = 0;
+    task_args->Signal           =&signal;
+    task_args->TsArray          = timestamps;
+    task_args->TsCount          =&complete_count;
+    task_args->TsIndex          = PARENT;
+    task_args->Trigger          = WAIT_COUNT;
+
+    /* publish the parent task, making it ready to run.
+     * for this test, the parent will run before the child.
+     * the parent task main will spawn the child task.
+     */
+    if (PAL_TaskPublish(main_pool, &parent_task_id, 1, NULL, 0) != 0) {
+        assert(0 && "PAL_TaskPublish failed (child)");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    /* wait for all tasks to complete */
+    WaitSignal(&signal);
+
+    /* verify that the CHILD completed before the PARENT */
+    if (timestamps[CHILD] > timestamps[PARENT]) {
+        assert(timestamps[CHILD] < timestamps[PARENT]);
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+cleanup:
+    DeleteSignal(&signal);
+    DeleteTaskScheduler(sched);
+    PAL_MemoryArenaResetToMarker(scratch_arena, scratch_mark);
+    PAL_MemoryArenaResetToMarker(global_arena, global_mark);
+    return result;
+}
+
+/* @summary Create and run a three tasks A, B and C, where B and C depend on A to start.
+ * The tasks are set to autocomplete. Task A is published first, followed by tasks B and C simultaneously.
+ * A should always finish before B and C, but B and C can finish in any order.
+ * @param global_arena The global application memory arena.
+ * @param scratch_arena The application scratch memory arena.
+ * @return Either TEST_PASS or TEST_FAIL.
+ */
+static int
+FTest_RunOneThread_WithDepsPubLast_Auto
+(
+    struct PAL_MEMORY_ARENA  *global_arena, 
+    struct PAL_MEMORY_ARENA *scratch_arena
+)
+{
+    WIN32_SIGNAL                  signal = {0};
+    TIMESTAMP_TASK_DATA       *task_args = NULL;
+    PAL_TASK                  *task_data = NULL;
+    PAL_TASK_SCHEDULER            *sched = NULL;
+    PAL_TASK_POOL             *main_pool = NULL;
+    PAL_MEMORY_ARENA_MARKER  global_mark;
+    PAL_MEMORY_ARENA_MARKER scratch_mark;
+    pal_uint64_t           timestamps[3]; /* 0 = A, 1 = B, 2 = C */
+    pal_usize_t           task_args_size;
+    pal_sint32_t          complete_count;
+    PAL_TASKID                    abc[3];
+    PAL_TASKID                   deps[1];
+    pal_uint32_t                    i, n;
+    int                           result;
+
+    pal_uint32_t const             A = 0;
+    pal_uint32_t const             B = 1;
+    pal_uint32_t const             C = 2;
+    pal_uint32_t const    WAIT_COUNT = 3;
+
+    result       = TEST_PASS;
+    global_mark  = PAL_MemoryArenaMark(global_arena);
+    scratch_mark = PAL_MemoryArenaMark(scratch_arena);
+
+    if ((sched = CreateTaskScheduler(FORCE_SINGLE_CORE, 0)) == NULL) {
+        assert(0 && "CreateTaskScheduler failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    if ((main_pool = PAL_TaskSchedulerAcquireTaskPool(sched, PAL_TASK_POOL_TYPE_ID_MAIN, 0)) == NULL) {
+        assert(0 && "PAL_TaskSchedulerAcquireTaskPool(MAIN) failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    /* initialize the timestamps array to zero */
+    PAL_ZeroMemory(timestamps, sizeof(timestamps));
+    if (CreateSignal(&signal) != 0) {
+        assert(0 && "CreateSignal failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    complete_count = 0;
+
+    /* generate task IDs for all three tasks */
+    if (PAL_TaskCreate(main_pool, abc, PAL_CountOf(abc), PAL_TASKID_NONE) != 0) {
+        assert(0 && "PAL_TaskCreate failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    /* initialize the list of dependencies - B and C depend on A */
+    deps[0] = abc[A];
+
+    /* initialize all of the tasks */
+    for (i = 0, n = PAL_CountOf(abc); i < n; ++i) {
+        if ((task_data = PAL_TaskGetData(main_pool, abc[i], &task_args, &task_args_size)) == NULL) {
+            assert(0 && "PAL_TaskGetData failed");
+            result = TEST_FAIL;
+            goto cleanup;
+        }
+        task_data->TaskMain       = PAL_TaskMain_NoOp;
+        task_data->TaskComplete   = Task_WriteTimestamp;
+        task_data->TaskId         = abc[i];
+        task_data->ParentId       = PAL_TASKID_NONE;
+        task_data->CompletionType = PAL_TASK_COMPLETION_TYPE_AUTOMATIC;
+        task_data->TaskFlags      = 0;
+        task_args->Signal         =&signal;
+        task_args->TsArray        = timestamps;
+        task_args->TsCount        =&complete_count;
+        task_args->TsIndex        = i;
+        task_args->Trigger        = WAIT_COUNT;
+    }
+
+    /* publish task A, which tasks B and C must wait on */
+    if (PAL_TaskPublish(main_pool, &abc[A], 1, NULL, 0) != 0) {
+        assert(0 && "PAL_TaskPublish failed (A)");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    /* then publish tasks B and C at the same time, since they have the same dependency */
+    if (PAL_TaskPublish(main_pool, &abc[B], 2, deps, PAL_CountOf(deps)) != 0) {
+        assert(0 && "PAL_TaskPublish failed (B,C)");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    /* wait for all tasks to complete */
+    WaitSignal(&signal);
+
+    /* verify that the both B and C completed after A */
+    if (timestamps[B] < timestamps[A] || timestamps[C] < timestamps[A]) {
+        assert(timestamps[B] >= timestamps[A]);
+        assert(timestamps[C] >= timestamps[A]);
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+cleanup:
+    DeleteSignal(&signal);
+    DeleteTaskScheduler(sched);
+    PAL_MemoryArenaResetToMarker(scratch_arena, scratch_mark);
+    PAL_MemoryArenaResetToMarker(global_arena, global_mark);
+    return result;
+}
+
+/* @summary Create and run a three tasks A, B and C, where B and C depend on A to start.
+ * The tasks are set to autocomplete. Tasks B and C are published first, followed by task A.
+ * A should always finish before B and C, but B and C can finish in any order.
+ * @param global_arena The global application memory arena.
+ * @param scratch_arena The application scratch memory arena.
+ * @return Either TEST_PASS or TEST_FAIL.
+ */
+static int
+FTest_RunOneThread_WithDepsPubFirst_Auto
+(
+    struct PAL_MEMORY_ARENA  *global_arena, 
+    struct PAL_MEMORY_ARENA *scratch_arena
+)
+{
+    WIN32_SIGNAL                  signal = {0};
+    TIMESTAMP_TASK_DATA       *task_args = NULL;
+    PAL_TASK                  *task_data = NULL;
+    PAL_TASK_SCHEDULER            *sched = NULL;
+    PAL_TASK_POOL             *main_pool = NULL;
+    PAL_MEMORY_ARENA_MARKER  global_mark;
+    PAL_MEMORY_ARENA_MARKER scratch_mark;
+    pal_uint64_t           timestamps[3]; /* 0 = A, 1 = B, 2 = C */
+    pal_usize_t           task_args_size;
+    pal_sint32_t          complete_count;
+    PAL_TASKID                    abc[3];
+    PAL_TASKID                   deps[1];
+    pal_uint32_t                    i, n;
+    int                           result;
+
+    pal_uint32_t const             A = 0;
+    pal_uint32_t const             B = 1;
+    pal_uint32_t const             C = 2;
+    pal_uint32_t const    WAIT_COUNT = 3;
+
+    result       = TEST_PASS;
+    global_mark  = PAL_MemoryArenaMark(global_arena);
+    scratch_mark = PAL_MemoryArenaMark(scratch_arena);
+
+    if ((sched = CreateTaskScheduler(FORCE_SINGLE_CORE, 0)) == NULL) {
+        assert(0 && "CreateTaskScheduler failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    if ((main_pool = PAL_TaskSchedulerAcquireTaskPool(sched, PAL_TASK_POOL_TYPE_ID_MAIN, 0)) == NULL) {
+        assert(0 && "PAL_TaskSchedulerAcquireTaskPool(MAIN) failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    /* initialize the timestamps array to zero */
+    PAL_ZeroMemory(timestamps, sizeof(timestamps));
+    if (CreateSignal(&signal) != 0) {
+        assert(0 && "CreateSignal failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    complete_count = 0;
+
+    /* generate task IDs for all three tasks */
+    if (PAL_TaskCreate(main_pool, abc, PAL_CountOf(abc), PAL_TASKID_NONE) != 0) {
+        assert(0 && "PAL_TaskCreate failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    /* initialize the list of dependencies - B and C depend on A */
+    deps[0] = abc[A];
+
+    /* initialize all of the tasks */
+    for (i = 0, n = PAL_CountOf(abc); i < n; ++i) {
+        if ((task_data = PAL_TaskGetData(main_pool, abc[i], &task_args, &task_args_size)) == NULL) {
+            assert(0 && "PAL_TaskGetData failed");
+            result = TEST_FAIL;
+            goto cleanup;
+        }
+        task_data->TaskMain       = Task_WriteTimestamp;
+        task_data->TaskComplete   = PAL_TaskComplete_NoOp;
+        task_data->TaskId         = abc[i];
+        task_data->ParentId       = PAL_TASKID_NONE;
+        task_data->CompletionType = PAL_TASK_COMPLETION_TYPE_AUTOMATIC;
+        task_data->TaskFlags      = 0;
+        task_args->Signal         =&signal;
+        task_args->TsArray        = timestamps;
+        task_args->TsCount        =&complete_count;
+        task_args->TsIndex        = i;
+        task_args->Trigger        = WAIT_COUNT;
+    }
+
+    /* publish tasks B and C at the same time, since they have the same dependency */
+    if (PAL_TaskPublish(main_pool, &abc[B], 2, deps, PAL_CountOf(deps)) != 0) {
+        assert(0 && "PAL_TaskPublish failed (B,C)");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    /* now publish task A, which tasks B and C must wait on */
+    if (PAL_TaskPublish(main_pool, &abc[A], 1, NULL, 0) != 0) {
+        assert(0 && "PAL_TaskPublish failed (A)");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    /* wait for all tasks to complete */
+    WaitSignal(&signal);
+
+    /* verify that the both B and C completed after A */
+    if (timestamps[B] < timestamps[A] || timestamps[C] < timestamps[A]) {
+        assert(timestamps[B] >= timestamps[A]);
+        assert(timestamps[C] >= timestamps[A]);
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+cleanup:
+    DeleteSignal(&signal);
+    DeleteTaskScheduler(sched);
+    PAL_MemoryArenaResetToMarker(scratch_arena, scratch_mark);
+    PAL_MemoryArenaResetToMarker(global_arena, global_mark);
+    return result;
+}
+
+/* @summary Performance test where all tasks are run on a single background thread.
+ * The tasks are set to autocomplete. Tasks have no children and no dependencies.
+ * @param global_arena The global application memory arena.
+ * @param scratch_arena The application scratch memory arena.
+ * @return Either TEST_PASS or TEST_FAIL.
+ */
+static int
+PTest_RunOneThread_NoDeps_NoChild_Auto
+(
+    struct PAL_MEMORY_ARENA  *global_arena, 
+    struct PAL_MEMORY_ARENA *scratch_arena
+)
+{
+    WIN32_SIGNAL                  signal = {0};
+    TIMESTAMP_TASK_DATA       *task_args = NULL;
+    PAL_TASK                  *task_data = NULL;
+    PAL_TASK_SCHEDULER            *sched = NULL;
+    PAL_TASK_POOL             *main_pool = NULL;
+    PAL_MEMORY_ARENA_MARKER  global_mark;
+    PAL_MEMORY_ARENA_MARKER scratch_mark;
+    pal_uint64_t             *timestamps;
+    pal_uint64_t                     tss;
+    pal_uint64_t                     tse;
+    pal_uint64_t                   nanos;
+    pal_uint64_t                  ts_min;
+    pal_uint64_t                  ts_max;
+    pal_uint64_t                  ts_sum;
+    pal_usize_t           task_args_size;
+    pal_sint32_t          complete_count;
+    PAL_TASKID              task_ids[32];
+    pal_uint32_t                 i, j, k;
+    int                           result;
+
+    pal_uint32_t const NUM_ITERS  = 1000;
+    pal_uint32_t const ITER_SIZE  = 4096;
+    pal_uint32_t const CHUNK_SIZE = PAL_CountOf(task_ids);
+    pal_uint32_t const NUM_CHUNKS = ITER_SIZE / PAL_CountOf(task_ids);
+    pal_uint32_t const WAIT_COUNT = ITER_SIZE;
+
+    result       = TEST_PASS;
+    global_mark  = PAL_MemoryArenaMark(global_arena);
+    scratch_mark = PAL_MemoryArenaMark(scratch_arena);
+    ts_min       =~0ULL;
+    ts_max       = 0ULL;
+    ts_sum       = 0ULL;
+
+    if ((sched = CreateTaskScheduler(ALLOW_MULTI_CORE, 0)) == NULL) {
+        assert(0 && "CreateTaskScheduler failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    if ((main_pool = PAL_TaskSchedulerAcquireTaskPool(sched, PAL_TASK_POOL_TYPE_ID_MAIN, 0)) == NULL) {
+        assert(0 && "PAL_TaskSchedulerAcquireTaskPool(MAIN) failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    if ((timestamps = PAL_MemoryArenaAllocateHostArray(global_arena, pal_uint64_t, ITER_SIZE)) == NULL) {
+        assert(0 && "Could not allocate timestamps array");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    /* initialize the timestamps array to zero */
+    PAL_ZeroMemory(timestamps, sizeof(pal_uint64_t) * ITER_SIZE);
+    if (CreateSignal(&signal) != 0) {
+        assert(0 && "CreateSignal failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    complete_count = 0;
+
+    for (i = 0; i < NUM_ITERS; ++i) {
+        tss=PAL_TimestampInTicks();
+        /* push tasks in batches */
+        for (j = 0; j < NUM_CHUNKS; ++j) {
+            if (PAL_TaskCreate(main_pool, task_ids, CHUNK_SIZE, PAL_TASKID_NONE) != 0) {
+                assert(0 && "PAL_TaskCreate failed");
+                result = TEST_FAIL;
+                goto cleanup;
+            }
+            for (k = 0; k < CHUNK_SIZE; ++k) {
+                if ((task_data = PAL_TaskGetData(main_pool, task_ids[k], &task_args, &task_args_size)) == NULL) {
+                    assert(0 && "PAL_TaskGetData failed");
+                    result = TEST_FAIL;
+                    goto cleanup;
+                }
+                task_data->TaskMain       = PAL_TaskMain_NoOp;
+                task_data->TaskComplete   = Task_CheckSignal;
+                task_data->TaskId         = task_ids[k];
+                task_data->ParentId       = PAL_TASKID_NONE;
+                task_data->CompletionType = PAL_TASK_COMPLETION_TYPE_AUTOMATIC;
+                task_data->TaskFlags      = 0;
+                task_args->Signal         =&signal;
+                task_args->TsArray        = timestamps;
+                task_args->TsCount        =&complete_count;
+                task_args->TsIndex        =(j * CHUNK_SIZE) + k;
+                task_args->Trigger        = WAIT_COUNT;
+            }
+            if (PAL_TaskPublish(main_pool, task_ids, CHUNK_SIZE, NULL, 0) != 0) {
+                assert(0 && "PAL_TaskPublish failed");
+                result = TEST_FAIL;
+                goto cleanup;
+            }
+        }
+        WaitSignal(&signal);
+        tse   = PAL_TimestampInTicks();
+        nanos = PAL_TimestampDeltaNanoseconds(tss, tse);
+        if (nanos < ts_min) ts_min = nanos;
+        if (nanos > ts_max) ts_max = nanos;
+        ts_sum += nanos;
+        ResetSignal(&signal);
+        complete_count = 0;
+    }
+
+    printf("TsMin: %I64uns TsMax: %I64uns Avg/Task: %I64uns\r\n", ts_min, ts_max, ts_sum / (NUM_ITERS*ITER_SIZE));
 
 cleanup:
     DeleteSignal(&signal);
@@ -755,6 +1307,11 @@ int main
     res = FTest_PermitListAllocFree                     (&global_arena, &scratch_arena); printf("FTest_PermitListAllocFree                     : %d\r\n", res);
     res = FTest_RunOneThread_NoDeps_Auto                (&global_arena, &scratch_arena); printf("FTest_RunOneThread_NoDeps_Auto                : %d\r\n", res);
     res = FTest_RunOneThread_NoDeps_WithExternChild_Auto(&global_arena, &scratch_arena); printf("FTest_RunOneThread_NoDeps_WithExternChild_Auto: %d\r\n", res);
+    res = FTest_RunOneThread_NoDeps_WithInternChild_Auto(&global_arena, &scratch_arena); printf("FTest_RunOneThread_NoDeps_WithInternChild_Auto: %d\r\n", res);
+    res = FTest_RunOneThread_WithDepsPubLast_Auto       (&global_arena, &scratch_arena); printf("FTest_RunOneThread_WithDepsPubLast_Auto       : %d\r\n", res);
+    res = FTest_RunOneThread_WithDepsPubFirst_Auto      (&global_arena, &scratch_arena); printf("FTest_RunOneThread_WithDepsPubFirst_Auto      : %d\r\n", res);
+
+    PTest_RunOneThread_NoDeps_NoChild_Auto(&global_arena, &scratch_arena);
 
 cleanup_and_exit:
     PAL_HostMemoryRelease(&scratch_alloc);
