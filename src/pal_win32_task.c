@@ -298,12 +298,22 @@ typedef struct PAL_AIO_WORKER_THREAD_INIT {
     HANDLE                     CompletionPort;      /* The I/O completion port to monitor for work and completion notifications. */
 } PAL_AIO_WORKER_THREAD_INIT;
 
+/* @summary Define the data maintained by a worker thread when attempting to steal work from other task pools.
+ * Each thread that executes tasks maintains an instance of this structure and passes it to PAL_TaskSchedulerParkWorker.
+ */
+typedef struct PAL_TASK_STEAL_STATE {
+    pal_uint32_t               AttemptCount;        /* The number of steal attempts made without success. Reset on wake or successful steal. */
+    pal_uint32_t               VictimIndex;         /* The zero-based index into VictimPool at which to begin attempting to steal work. */
+    pal_uint32_t               VictimPool[8];       /* An array of task pool indices specifying pools that have recently published work. */
+    pal_uint32_t               MainPoolIndex;       /* The zero-based index of the task pool with PAL_TASK_POOL_ID_MAIN, acting as the "global" work pool. */
+} PAL_TASK_STEAL_STATE;
+
 /* @summary Define the result values that can be returned from PAL_TaskSchedulerParkWorker.
  */
 typedef enum PAL_TASK_SCHEDULER_PARK_RESULT {
     PAL_TASK_SCHEDULER_PARK_RESULT_SHUTDOWN   =  0, /* The thread was woken up because the scheduler is being shutdown. */
     PAL_TASK_SCHEDULER_PARK_RESULT_TRY_STEAL  =  1, /* The scheduler produced a list of at least one pool with available tasks; the thread should attempt to steal some work. */
-    PAL_TASK_SCHEDULER_PARK_RESULT_WAKE_TASK  =  2, /* The thread was woken up and should check the task pool's WakeupPoolId field for the pool index of a PAL_TASK_POOL that may have work to steal. */
+    PAL_TASK_SCHEDULER_PARK_RESULT_WAKEUP     =  2, /* The thread was woken up and should check the task pool's WakeupPoolId field for the pool index of a PAL_TASK_POOL that may have work to steal. */
 } PAL_TASK_SCHEDULER_PARK_RESULT;
 
 /* @summary Define the result values that can be returned from PAL_TaskSchedulerWakeWorker.
@@ -374,7 +384,7 @@ PAL_TaskPoolGetSlotIndexForPermitList
     struct PAL_PERMITS_LIST  *p_list
 )
 {
-    pal_uint8_t *p_base = (pal_uint8_t*) owner_pool->PermitListData;
+    pal_uint8_t *p_base = (pal_uint8_t*) owner_pool->PermListData;
     pal_uint8_t *p_addr = (pal_uint8_t*) p_list;
     return (pal_uint32_t)((p_addr - p_base) / sizeof(PAL_PERMITS_LIST));
 }
@@ -395,7 +405,7 @@ PAL_TaskPoolMakeTaskSlotFree /* this only does the return - not the generation u
 {
     pal_uint32_t    packed = PAL_TaskSlotPack(slot_index, generation);
     pal_uint64_t write_pos =(PAL_AtomicIncrement_u64(owner_pool->SlotFreeCount) - 1) & 0xFFFFULL;
-    owner_pool->AllocSlotIds[write_pos] = packed;
+    owner_pool->FreeSlotIds[write_pos] = packed;
 }
 
 /* @summary Return a permits list to the free list for the owning task pool.
@@ -405,14 +415,14 @@ PAL_TaskPoolMakeTaskSlotFree /* this only does the return - not the generation u
  * This index can be calculated using PAL_TaskPoolGetSlotIndexForPermitList.
  */
 static void
-PAL_TaskPoolMakePermitsListFree /* this only does the return - not the generation update */
+PAL_TaskPoolMakePermListFree /* this only does the return - not the generation update */
 (
     struct PAL_TASK_POOL *owner_pool, 
     pal_uint32_t          list_index
 )
 {
-    pal_uint64_t  write_pos =(PAL_AtomicIncrement_u64(owner_pool->PermitFreeCount) - 1) & 0xFFFFULL;
-    owner_pool->PermitSlotIds[write_pos] = list_index;
+    pal_uint64_t  write_pos =(PAL_AtomicIncrement_u64(owner_pool->PermFreeCount) - 1) & 0xFFFFULL;
+    owner_pool->PermSlotIds[write_pos] = list_index;
 }
 
 /* @summary Commit one or more additional chunks of task slot data, backing it with physical memory.
@@ -443,29 +453,29 @@ PAL_TaskPoolCommitTaskDataChunks
     }
 }
 
-/* @summary Commit one or more additional chunks of task slot data, backing it with physical memory.
+/* @summary Commit one or more additional chunks of permit list data, backing it with physical memory.
  * This operation is performed when publishing tasks with dependencies during PAL_TaskPublish.
  * @param thread_pool The PAL_TASK_POOL bound to the thread executing PAL_TaskPublish.
  * @param lists_needed The number of additional permit lists required by the call to PAL_TaskPublish.
  */
 static void
-PAL_TaskPoolCommitPermitsListChunks
+PAL_TaskPoolCommitPermListChunks
 (
     struct PAL_TASK_POOL *thread_pool, 
     pal_uint32_t         lists_needed
 )
 {
-    if (thread_pool->MaxPermitLists < PAL_TASKID_MAX_SLOTS_PER_POOL) {
-        void           *base_addr =&thread_pool->PermitListData[thread_pool->MaxPermitLists];
+    if (thread_pool->MaxPermLists < PAL_TASKID_MAX_SLOTS_PER_POOL) {
+        void           *base_addr =&thread_pool->PermListData[thread_pool->MaxPermLists];
         pal_uint32_t  chunks_need =(lists_needed + (PAL_PERMIT_LIST_CHUNK_SIZE-1)) / PAL_PERMIT_LIST_CHUNK_SIZE;
         pal_uint32_t  lists_added = chunks_need  *  PAL_PERMIT_LIST_CHUNK_SIZE;
         pal_usize_t  commit_bytes = lists_added  *  sizeof(PAL_PERMITS_LIST);
-        pal_uint32_t      new_pos = thread_pool->MaxPermitLists;
-        pal_uint32_t      new_max = thread_pool->MaxPermitLists + lists_added;
+        pal_uint32_t      new_pos = thread_pool->MaxPermLists;
+        pal_uint32_t      new_max = thread_pool->MaxPermLists + lists_added;
         if (VirtualAlloc(base_addr, commit_bytes, MEM_COMMIT, PAGE_READWRITE) == base_addr) {
-            thread_pool->MaxPermitLists = new_max;
+            thread_pool->MaxPermLists = new_max;
             do { /* add the new slots to the free list */
-                PAL_TaskPoolMakePermitsListFree(thread_pool, new_pos++);
+                PAL_TaskPoolMakePermListFree(thread_pool, new_pos++);
             } while (new_pos < new_max);
         }
     }
@@ -487,10 +497,10 @@ PAL_TaskPoolAllocatePermitsLists
     pal_uint32_t              list_count
 )
 {
-    PAL_PERMITS_LIST *p_base = owner_pool->PermitListData;
-    pal_uint32_t  *slot_list = owner_pool->PermitSlotIds;
-    pal_uint64_t   alloc_max = owner_pool->PermitAllocCount;
-    pal_uint64_t   alloc_cur = owner_pool->PermitAllocNext;
+    PAL_PERMITS_LIST *p_base = owner_pool->PermListData;
+    pal_uint32_t  *slot_list = owner_pool->PermSlotIds;
+    pal_uint64_t   alloc_max = owner_pool->PermAllocCount;
+    pal_uint64_t   alloc_cur = owner_pool->PermAllocNext;
     pal_uint32_t write_index = 0;
     pal_uint32_t  freelist_v;
 
@@ -498,12 +508,12 @@ PAL_TaskPoolAllocatePermitsLists
         for ( ; ; ) {
             if (alloc_cur == alloc_max) {
                 /* refill the claimed set */
-                alloc_cur  = PAL_AtomicExchange_u64(owner_pool->PermitAllocCount, owner_pool->PermitFreeCount);
-                alloc_max  = owner_pool->PermitAllocCount;
+                alloc_cur  = PAL_AtomicExchange_u64(owner_pool->PermAllocCount, owner_pool->PermFreeCount);
+                alloc_max  = owner_pool->PermAllocCount;
                 if (alloc_cur == alloc_max) {
-                    if (owner_pool->MaxPermitLists < PAL_TASKID_MAX_SLOTS_PER_POOL) {
+                    if (owner_pool->MaxPermLists < PAL_TASKID_MAX_SLOTS_PER_POOL) {
                         /* commit additional permit lists, if possible */
-                        PAL_TaskPoolCommitPermitsListChunks(owner_pool, list_count - write_index);
+                        PAL_TaskPoolCommitPermListChunks(owner_pool, list_count - write_index);
                     } else {
                         /* no choice but to wait for some work to finish and try again */
                         YieldProcessor();
@@ -515,7 +525,7 @@ PAL_TaskPoolAllocatePermitsLists
                 freelist_v = slot_list[(alloc_cur++) & 0xFFFF];
                 list_array[write_index++] = &p_base[freelist_v];
                 if (write_index == list_count) {
-                    owner_pool->PermitAllocNext = alloc_cur;
+                    owner_pool->PermAllocNext = alloc_cur;
                     return 0;
                 }
             }
@@ -594,10 +604,10 @@ PAL_TaskPoolPushReadyTask
 {
     PAL_TASKID  *stor = worker_pool->ReadyTaskIds;
     pal_sint64_t mask = PAL_TASKID_MAX_SLOTS_PER_POOL - 1;
-    pal_sint64_t  pos = worker_pool->ReadyPrivatePos;
+    pal_sint64_t  pos = worker_pool->ReadyPrvPos;
     stor[pos & mask]  = task_id;
     _ReadWriteBarrier();
-    worker_pool->ReadyPrivatePos = pos + 1;
+    worker_pool->ReadyPrvPos = pos + 1;
 }
 
 /* @summary Push one or more ready-to-run task IDs onto the private end of the ready-to-run deque.
@@ -616,14 +626,14 @@ PAL_TaskPoolPushReadyTaskList
 {
     PAL_TASKID  *stor = worker_pool->ReadyTaskIds;
     pal_sint64_t mask = PAL_TASKID_MAX_SLOTS_PER_POOL - 1;
-    pal_sint64_t  pos = worker_pool->ReadyPrivatePos;
+    pal_sint64_t  pos = worker_pool->ReadyPrvPos;
     pal_sint64_t    p;
     pal_uint32_t    i;
     for (i = 0, p = pos; i < task_count; ++i, ++p) {
         stor[p & mask] = task_list[i];
     }
     _ReadWriteBarrier();
-    worker_pool->ReadyPrivatePos = p;
+    worker_pool->ReadyPrvPos = p;
 }
 
 /* @summary Attempt to take the task ID of a ready-to-run task from the private end of the ready-to-run deque.
@@ -639,12 +649,12 @@ PAL_TaskPoolTakeReadyTask
 {
     PAL_TASKID  *stor = worker_pool->ReadyTaskIds;
     pal_sint64_t mask = PAL_TASKID_MAX_SLOTS_PER_POOL - 1;
-    pal_sint64_t  pos = worker_pool->ReadyPrivatePos  - 1;
+    pal_sint64_t  pos = worker_pool->ReadyPrvPos - 1;
     pal_sint64_t  top;
     PAL_TASKID    res = PAL_TASKID_NONE;
 
-    PAL_AtomicExchange_s64(worker_pool->ReadyPrivatePos, pos);
-    top = worker_pool->ReadyPublicPos;
+    PAL_AtomicExchange_s64(worker_pool->ReadyPrvPos, pos);
+    top = worker_pool->ReadyPubPos;
 
     if (top <= pos) {
         res  = stor[pos & mask];
@@ -653,18 +663,18 @@ PAL_TaskPoolTakeReadyTask
             return res;
         }
         /* this was the final item in the deque - race a concurrent steal */
-        if (PAL_AtomicCompareAndSwap_s64(worker_pool->ReadyPublicPos, top, top+1) == top) {
+        if (PAL_AtomicCompareAndSwap_s64(worker_pool->ReadyPubPos, top, top+1) == top) {
             /* this thread won the race */
-            worker_pool->ReadyPrivatePos = top + 1;
+            worker_pool->ReadyPrvPos = top + 1;
             return res;
         } else {
             /* this thread lost the race */
-            worker_pool->ReadyPrivatePos = top + 1;
+            worker_pool->ReadyPrvPos = top + 1;
             return PAL_TASKID_NONE;
         }
     } else {
         /* the deque is currently empty */
-        worker_pool->ReadyPrivatePos = top;
+        worker_pool->ReadyPrvPos = top;
         return PAL_TASKID_NONE;
     }
 }
@@ -682,13 +692,13 @@ PAL_TaskPoolStealReadyTask
 {
     PAL_TASKID  *stor = victim_pool->ReadyTaskIds;
     pal_sint64_t mask = PAL_TASKID_MAX_SLOTS_PER_POOL - 1;
-    pal_sint64_t  top = victim_pool->ReadyPublicPos;
+    pal_sint64_t  top = victim_pool->ReadyPubPos;
     _ReadWriteBarrier();
-    pal_sint64_t  pos = victim_pool->ReadyPrivatePos;
+    pal_sint64_t  pos = victim_pool->ReadyPrvPos;
     PAL_TASKID    res = PAL_TASKID_NONE;
     if (top < pos) {
         res = stor[top & mask];
-        if (PAL_AtomicCompareAndSwap_s64(victim_pool->ReadyPublicPos, top, top+1) == top) {
+        if (PAL_AtomicCompareAndSwap_s64(victim_pool->ReadyPubPos, top, top+1) == top) {
             /* this thread claims the item */
             return res;
         } else {
@@ -710,54 +720,47 @@ PAL_TaskPoolStealReadyTask
 static pal_sint32_t
 PAL_TaskSchedulerParkWorker
 (
-    struct PAL_TASK_SCHEDULER *scheduler, 
-    struct PAL_TASK_POOL    *worker_pool, 
-    pal_uint32_t             *steal_list
+    struct PAL_TASK_SCHEDULER     *scheduler, 
+    struct PAL_TASK_POOL        *worker_pool, 
+    struct PAL_TASK_STEAL_STATE *steal_state
 )
 {
-    PAL_PARKED_WORKER *slot;
-    pal_uint64_t    ec_prev;
-    pal_uint64_t    ec_curr;
-    DWORD           wait_rc;
+    pal_uint64_t ec_prev = worker_pool->WakeEventCount;
+    pal_uint64_t ec_curr = scheduler->WakeEventCount;
+    pal_sint32_t  result = PAL_TASK_SCHEDULER_PARK_RESULT_TRY_STEAL;
+    DWORD        wait_rc;
 
-    ec_prev = PAL_AtomicExchange_u64(worker_pool->ReadyEventCount, scheduler->ReadyEventCount);
-    if ((ec_curr = worker_pool->ReadyEventCount) != ec_prev) {
-        /* one or more tasks have been published - attempt to steal work from another thread */
-        PAL_CopyMemory(steal_list, scheduler->StealPoolSet, sizeof(scheduler->StealPoolSet));
-        return PAL_TASK_SCHEDULER_PARK_RESULT_TRY_STEAL;
-    } else {
-        AcquireSRWLockExclusive(&scheduler->ParkStateLock);
-        /* make the park visible to wake operations */
-        PAL_AtomicIncrement_u64(scheduler->ParkEventCount);
-        /* prepare to park the worker thread */
-        slot = &scheduler->ParkedWorkers[scheduler->ParkedWorkerCount];
-        slot->ParkSemaphore = worker_pool->ParkSemaphore;
-        slot->WakeupPoolId  =&worker_pool->WakeupPoolId;
-        /* double-check that no tasks have been published */
-        PAL_AtomicExchange_u64(worker_pool->ReadyEventCount, scheduler->ReadyEventCount);
-        if ((ec_curr = worker_pool->ReadyEventCount) == ec_prev) {
-            /* no task has been published where the waker hasn't seen the park - put the worker to sleep */
-            scheduler->ParkedWorkerCount++;
-            ReleaseSRWLockExclusive(&scheduler->ParkStateLock);
-            if ((wait_rc = WaitForSingleObject(worker_pool->ParkSemaphore, INFINITE)) == WAIT_OBJECT_0) {
-                if (scheduler->ShutdownSignal) {
-                    return PAL_TASK_SCHEDULER_PARK_RESULT_SHUTDOWN;
-                } else {
-                    /* the pool has been assigned a victim, but make sure its steal list is up-to-date */
-                    PAL_CopyMemory(steal_list, scheduler->StealPoolSet, sizeof(scheduler->StealPoolSet));
-                    return PAL_TASK_SCHEDULER_PARK_RESULT_WAKE_TASK;
-                }
-            } else {
-                /* an error occurred during the wait */
-                return PAL_TASK_SCHEDULER_PARK_RESULT_SHUTDOWN;
-            }
-        } else {
-            /* a task has been published during the park operation - don't actually sleep */
-            ReleaseSRWLockExclusive(&scheduler->ParkStateLock);
-            PAL_CopyMemory(steal_list, scheduler->StealPoolSet, sizeof(scheduler->StealPoolSet));
-            return PAL_TASK_SCHEDULER_PARK_RESULT_TRY_STEAL;
-        }
+    _ReadWriteBarrier();
+    if (ec_curr != ec_prev) {
+        result = PAL_TASK_SCHEDULER_PARK_RESULT_TRY_STEAL;
+        goto update_steal_state;
     }
+
+    AcquireSRWLockExclusive(&scheduler->ParkStateLock);
+    scheduler->ParkEventCount++;
+    worker_pool->NextParkPool = scheduler->ParkedWorkers;
+    if ((ec_curr = scheduler->WakeEventCount) == ec_prev) {
+        scheduler->ParkedWorkers = worker_pool;
+        ReleaseSRWLockExclusive(&scheduler->ParkStateLock);
+        if ((wait_rc = WaitForSingleObject(worker_pool->ParkSemaphore, INFINITE)) == WAIT_OBJECT_0) {
+            if (scheduler->ShutdownSignal == 0) {
+                result = PAL_TASK_SCHEDULER_PARK_RESULT_WAKEUP;
+                goto update_steal_state;
+            }
+        }
+        return PAL_TASK_SCHEDULER_PARK_RESULT_SHUTDOWN;
+    } else {
+        /* a wake event was received during the park */
+        ReleaseSRWLockExclusive(&scheduler->ParkStateLock);
+        goto update_steal_state;
+    }
+
+update_steal_state:
+    PAL_CopyMemory(steal_state->VictimPool, scheduler->StealPoolSet, sizeof(scheduler->StealPoolSet));
+    steal_state->AttemptCount   = 0;
+    steal_state->VictimIndex    =(ec_curr - 1) & 7;
+    worker_pool->WakeEventCount = ec_curr;
+    return result;
 }
 
 /* @summary Potentially wake up one or more waiting threads to process ready-to-run tasks.
@@ -778,32 +781,42 @@ PAL_TaskSchedulerWakeWorkers
     pal_uint32_t              task_count
 )
 {
-    PAL_PARKED_WORKER *waiter_list = scheduler->ParkedWorkers;
+    PAL_TASK_POOL          *waiter = NULL;
     pal_uint64_t        slot_index = 0;
     pal_uint32_t        pool_index = worker_pool->PoolIndex;
-    pal_uint32_t const MAX_WAKEUPS = 4;
-    pal_uint32_t       num_wakeups = 0;
-    pal_uint32_t       num_waiters = 0;
-    pal_uint64_t           ec_prev;
+    pal_uint64_t           ec_prev = worker_pool->ParkEventCount;
     pal_uint64_t           ec_curr;
-    pal_uint32_t      waiter_count; /* num_waiters clamped to MAX_WAKEUPS */
     pal_uint32_t                 i;
-    PAL_PARKED_WORKER  wake_set[4];
 
     /* queue all tasks */
     PAL_TaskPoolPushReadyTaskList(worker_pool, give_tasks, task_count);
 
     /* claim a slot in StealPoolSet and make the publish visible to other threads */
-    slot_index = (PAL_AtomicIncrement_u64(scheduler->ReadyEventCount) - 1) & 7;
+    slot_index = (PAL_AtomicIncrement_u64(scheduler->WakeEventCount) - 1) & 7;
     scheduler->StealPoolSet[slot_index] = pool_index;
 
-    /* determine whether to wake up parked threads or not */
+    /* wake up waiting/parked threads */
+    if ((ec_curr = scheduler->ParkEventCount) == ec_prev) {
+        return PAL_TASK_SCHEDULER_WAKE_RESULT_QUEUED;
+    }
+    AcquireSRWLockExclusive(&scheduler->ParkStateLock); {
+        waiter = scheduler->ParkedWorkers; i = 0;
+        while (i < task_count && waiter != NULL) {
+            waiter->WakePoolId = pool_index; i++;
+            ReleaseSemaphore(waiter->ParkSemaphore, 1, NULL);
+            waiter = waiter->NextParkPool;
+        }
+        scheduler->ParkedWorkers = waiter;
+    } ReleaseSRWLockExclusive(&scheduler->ParkStateLock);
+    worker_pool->ParkEventCount = ec_curr;
+    return PAL_TASK_SCHEDULER_WAKE_RESULT_WAKEUP;
+
+#if 0
     ec_prev = PAL_AtomicExchange_u64(worker_pool->ParkEventCount, scheduler->ParkEventCount);
     if ((ec_curr = worker_pool->ParkEventCount) == ec_prev) {
         /* no threads have gone to sleep since this thread last made work available */
         return PAL_TASK_SCHEDULER_WAKE_RESULT_QUEUED;
     }
-
     /* determine the set of parked threads to wake. 
      * the set may be empty, which is not a problem.
      * avoid any system calls inside the critical section. */
@@ -825,6 +838,7 @@ PAL_TaskSchedulerWakeWorkers
     worker_pool->ParkEventCount    = ec_curr;
     worker_pool->ParkedWorkerCount = num_waiters - num_wakeups;
     return PAL_TASK_SCHEDULER_WAKE_RESULT_WAKEUP;
+#endif
 }
 
 /* @summary Attempt to steal work from another thread's ready-to-run queue.
@@ -839,33 +853,46 @@ PAL_TaskSchedulerWakeWorkers
 static PAL_TASKID
 PAL_TaskSchedulerStealWork
 (
-    struct PAL_TASK_SCHEDULER *scheduler,
-    pal_uint32_t const       *steal_list,
-    pal_uint32_t const    num_steal_list,
-    pal_uint32_t             start_index,
-    pal_uint32_t             *next_start
+    struct PAL_TASK_SCHEDULER     *scheduler,
+    struct PAL_TASK_STEAL_STATE *steal_state
 )
 {
     PAL_TASK_POOL  **pool_list = scheduler->TaskPoolList;
     PAL_TASK_POOL *victim_pool = NULL;
     PAL_TASKID     stolen_task = PAL_TASKID_NONE;
+    pal_uint32_t  *victim_list = steal_state->VictimPool;
+    pal_uint32_t   start_index = steal_state->VictimIndex;
+    pal_uint32_t       attempt = 0;
+    pal_uint32_t  MAX_ATTEMPTS = 4;
     pal_uint32_t          i, n;
 
-    if (start_index >= num_steal_list) {
-        /* reset to the start of the list */
-        start_index  = 0;
-    }
-    /* attempt to steal work from one of the candidate victims */
-    for (i = start_index, n = num_steal_list; i < n; ++i) {
-        victim_pool = pool_list[steal_list[i]];
+    while (attempt++ <= MAX_ATTEMPTS) {
+        /* attempt to steal work from one of the candidate victims */
+        for (i = 0, n = PAL_CountOf(steal_state->VictimPool); i < n; ++i) {
+            victim_pool = pool_list[victim_list[(start_index++) & 7]];
+            stolen_task = PAL_TaskPoolStealReadyTask(victim_pool);
+            if (stolen_task != PAL_TASKID_NONE) {
+                /* the steal was successful */
+                steal_state->VictimIndex  =(start_index-1) & 7;
+                steal_state->AttemptCount = 0;
+                return stolen_task;
+            }
+        }
+        /* attempt to steal work from the main task pool */
+        victim_pool = pool_list[steal_state->MainPoolIndex];
         stolen_task = PAL_TaskPoolStealReadyTask(victim_pool);
         if (stolen_task != PAL_TASKID_NONE) {
             /* the steal was successful */
+            steal_state->AttemptCount = 0;
+            steal_state->VictimIndex  =~0UL;
             return stolen_task;
         }
+        /* yield for a short time */
+        YieldProcessor();
     }
-    /* processed the entire steal_list with no success */
-    PAL_Assign(next_start, 0);
+    /* all attempts failed */
+    steal_state->AttemptCount = MAX_ATTEMPTS;
+    steal_state->VictimIndex  = start_index;
     return PAL_TASKID_NONE;
 }
 
@@ -896,6 +923,7 @@ PAL_TaskPoolCompleteTask
          * sets the number of permits to zero, and increments the generation.
          */
         PAL_TASK_SCHEDULER *scheduler = ctx->TaskScheduler;
+        PAL_TASK_POOL     **pool_list = ctx->TaskScheduler->TaskPoolList;
         pal_uint32_t          new_gen =(generation + 1) & PAL_TASK_STATE_TAG_GENER_MASK;
         pal_uint32_t         done_tag = new_gen << PAL_TASK_STATE_TAG_GENER_SHIFT;
         pal_uint32_t        state_tag = task_data->StateTag;
@@ -925,12 +953,12 @@ PAL_TaskPoolCompleteTask
 
         /* bubble completion up to the parent task */
         if ((parent_task = task_data->PublicData.ParentId) != PAL_TASKID_NONE) {
-            pal_uint32_t   parent_pidx = PAL_TaskIdGetTaskPoolIndex(parent_task);
-            pal_uint32_t   parent_slot = PAL_TaskIdGetTaskSlotIndex(parent_task);
-            pal_uint32_t   parent_genr = PAL_TaskIdGetGeneration(parent_task);
-            PAL_TASK_POOL *parent_pool = scheduler->TaskPoolList[parent_pidx];
-            PAL_TASK_DATA *parent_data =&scheduler->TaskPoolList[parent_pidx]->TaskSlotData[parent_slot];
-            PAL_TaskPoolCompleteTask(ctx, parent_pool, parent_data, parent_task, parent_slot, parent_genr);
+            pal_uint32_t   parent_pidx  = PAL_TaskIdGetTaskPoolIndex(parent_task);
+            pal_uint32_t   parent_slot  = PAL_TaskIdGetTaskSlotIndex(parent_task);
+            pal_uint32_t   parent_genr  = PAL_TaskIdGetGeneration(parent_task);
+            PAL_TASK_POOL *parent_pool  = pool_list[parent_pidx];
+            PAL_TASK_DATA *parent_data  =&pool_list[parent_pidx]->TaskSlotData[parent_slot];
+            PAL_TaskPoolCompleteTask(ctx, parent_pool, parent_data, parent_task, parent_slot,parent_genr);
         }
 
         /* process any associated permits lists */
@@ -938,11 +966,11 @@ PAL_TaskPoolCompleteTask
             PAL_PERMITS_LIST *p = task_data->Permits[i];
             if (PAL_AtomicIncrement_u32(p->WaitCount) == 0) {
                 /* all tasks in p->TaskList are now ready-to-run */
-                PAL_TASK_POOL *permit_owner = scheduler->TaskPoolList[p->PoolIndex];
+                PAL_TASK_POOL *permit_owner = pool_list[p->PoolIndex];
                 pal_uint32_t   permit_index = PAL_TaskPoolGetSlotIndexForPermitList(permit_owner, p);
                 for (j = 0; p->TaskList[j] != PAL_TASKID_NONE; ++j) { /* empty */ }
                 PAL_TaskSchedulerWakeWorkers(scheduler, ctx->CallbackPool, p->TaskList, j);
-                PAL_TaskPoolMakePermitsListFree(permit_owner, permit_index);
+                PAL_TaskPoolMakePermListFree(permit_owner, permit_index);
             }
         }
 
@@ -964,7 +992,7 @@ PAL_CpuWorkerThreadMain
 {
     PAL_CPU_WORKER_THREAD_INIT *init =(PAL_CPU_WORKER_THREAD_INIT*) argp;
     PAL_TASK_SCHEDULER    *scheduler = init->TaskScheduler;
-    PAL_TASK_POOL        **pool_list = scheduler->TaskPoolList;
+    PAL_TASK_POOL        **pool_list = init->TaskScheduler->TaskPoolList;
     PAL_TASK_POOL       *thread_pool = NULL;
     PAL_TASK_DATA         *task_data = NULL;
     void                 *thread_ctx = NULL;
@@ -972,15 +1000,13 @@ PAL_CpuWorkerThreadMain
     PAL_TASKID          current_task = PAL_TASKID_NONE;
     pal_sint32_t        pool_type_id = PAL_TASK_POOL_TYPE_ID_CPU_WORKER;
     pal_uint32_t     pool_bind_flags = PAL_TASK_POOL_BIND_FLAGS_NONE;
-    pal_sint32_t         wake_reason = PAL_TASK_SCHEDULER_PARK_RESULT_WAKE_TASK;
-    pal_uint32_t         steal_count = 8;
-    pal_uint32_t         steal_index = 0;
+    pal_sint32_t         wake_reason = PAL_TASK_SCHEDULER_PARK_RESULT_WAKEUP;
+    PAL_TASK_STEAL_STATE steal_state;
     PAL_TASK_CALLBACK_CONTEXT   exec;
     PAL_TASK_ARGS          task_args;
     pal_uint32_t          pool_index;
     pal_uint32_t          slot_index;
     pal_uint32_t          generation;
-    pal_uint32_t       steal_list[8];
 
     /* set the thread name for diagnostics tools */
     PAL_ThreadSetName("CPU Worker");
@@ -992,7 +1018,10 @@ PAL_CpuWorkerThreadMain
     }
     /* set the park semaphore for the task pool bound to the thread */
     thread_pool->ParkSemaphore = init->ParkSemaphore;
-    PAL_ZeroMemory(steal_list, sizeof(steal_list));
+
+    /* initialize the thread-local task stealing state*/
+    PAL_ZeroMemory(&steal_state, sizeof(steal_state));
+    steal_state.MainPoolIndex  = scheduler->MainPoolIndex;
 
     /* run the application-supplied initialization function */
     if (init->ThreadInit(scheduler, thread_pool, init->CreateContext, &thread_ctx) != 0) {
@@ -1011,15 +1040,15 @@ PAL_CpuWorkerThreadMain
     __try {
         while (scheduler->ShutdownSignal == 0) {
             /* wait for work to become available */
-            switch ((wake_reason = PAL_TaskSchedulerParkWorker(scheduler, thread_pool, steal_list))) {
+            switch ((wake_reason = PAL_TaskSchedulerParkWorker(scheduler, thread_pool, &steal_state))) {
                 case PAL_TASK_SCHEDULER_PARK_RESULT_SHUTDOWN:
                     { current_task = PAL_TASKID_NONE;
                     } break;
                 case PAL_TASK_SCHEDULER_PARK_RESULT_TRY_STEAL:
-                    { current_task = PAL_TaskSchedulerStealWork(scheduler, steal_list, steal_count, steal_index, &steal_index);
+                    { current_task = PAL_TaskSchedulerStealWork(scheduler, &steal_state);
                     } break;
-                case PAL_TASK_SCHEDULER_PARK_RESULT_WAKE_TASK:
-                    { current_task = PAL_TaskPoolStealReadyTask(pool_list[thread_pool->WakeupPoolId]);
+                case PAL_TASK_SCHEDULER_PARK_RESULT_WAKEUP:
+                    { current_task = PAL_TaskPoolStealReadyTask(pool_list[thread_pool->WakePoolId]);
                     } break;
                 default:
                     { current_task = PAL_TASKID_NONE;
@@ -1042,9 +1071,8 @@ PAL_CpuWorkerThreadMain
                  * work items in the ready-to-run deque for this thread.
                  * keep executing tasks until the queue drains.
                  */
-                if ((current_task = PAL_TaskPoolTakeReadyTask(thread_pool)) == PAL_TASKID_NONE) {
-                    /* try and steal some work */
-                    current_task = PAL_TaskSchedulerStealWork(scheduler, steal_list, steal_count, steal_index, &steal_index);
+                if((current_task = PAL_TaskPoolTakeReadyTask(thread_pool)) == PAL_TASKID_NONE) {
+                    current_task = PAL_TaskSchedulerStealWork(scheduler, &steal_state);
                 }
             }
         }
@@ -1188,11 +1216,11 @@ PAL_TaskPoolQueryMemorySize
     udata_offset  = reserve_size;
     reserve_size  = PAL_AlignUp(reserve_size , page_size); /* user data */
     udata_size    = reserve_size - udata_offset;
-    reserve_size += PAL_AllocationSizeArray(pal_uint32_t    , PAL_TASKID_MAX_SLOTS_PER_POOL); /* PermitSlotIds */
-    reserve_size += PAL_AllocationSizeArray(pal_uint32_t    , PAL_TASKID_MAX_SLOTS_PER_POOL); /* AllocSlotIds  */
-    reserve_size += PAL_AllocationSizeArray(PAL_TASKID      , PAL_TASKID_MAX_SLOTS_PER_POOL); /* ReadyTaskIds  */
+    reserve_size += PAL_AllocationSizeArray(pal_uint32_t    , PAL_TASKID_MAX_SLOTS_PER_POOL); /* PermSlotIds  */
+    reserve_size += PAL_AllocationSizeArray(pal_uint32_t    , PAL_TASKID_MAX_SLOTS_PER_POOL); /* FreeSlotIds  */
+    reserve_size += PAL_AllocationSizeArray(PAL_TASKID      , PAL_TASKID_MAX_SLOTS_PER_POOL); /* ReadyTaskIds */
     commit_size   = reserve_size;
-    reserve_size += PAL_AllocationSizeArray(PAL_PERMITS_LIST, PAL_TASKID_MAX_SLOTS_PER_POOL); /* PermitListData */
+    reserve_size += PAL_AllocationSizeArray(PAL_PERMITS_LIST, PAL_TASKID_MAX_SLOTS_PER_POOL); /* PermListData */
     reserve_size += PAL_AllocationSizeArray(PAL_TASK_DATA   , PAL_TASKID_MAX_SLOTS_PER_POOL); /* TaskSlotData */
     reserve_size  = PAL_AlignUp(reserve_size , page_size); /* pools are page-aligned */
     pool_size->ReserveSize    = reserve_size;
@@ -1261,7 +1289,6 @@ PAL_TaskSchedulerQueryMemorySize
     reserve_size += PAL_AllocationSizeArray(unsigned int           , thread_count);               /* OsWorkerThreadIds */
     reserve_size += PAL_AllocationSizeArray(HANDLE                 , thread_count);               /* OsWorkerThreadHandles */
     reserve_size += PAL_AllocationSizeArray(HANDLE                 , init->CpuWorkerThreadCount); /* WorkerParkSemaphores */
-    reserve_size += PAL_AllocationSizeArray(PAL_PARKED_WORKER      , init->CpuWorkerThreadCount); /* ParkedWorkers */
     /* ... */
     reserve_size  = PAL_AlignUp(reserve_size, page_size);
     commit_size   =(pal_uint32_t) reserve_size;
@@ -1356,32 +1383,30 @@ PAL_TaskSchedulerCreate
         error_res = ERROR_ARENA_TRASHED;
         goto cleanup_and_fail;
     }
-    pool_base                       = base_ptr + sched_size.TaskPoolOffset;
-    scheduler                       = PAL_MemoryArenaAllocateHostType (&scheduler_arena, PAL_TASK_SCHEDULER);
-    scheduler->TaskPoolList         = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, PAL_TASK_POOL*         , counts.TotalPoolCount);
-    scheduler->PoolThreadId         = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, pal_uint32_t           , counts.TotalPoolCount);
-    scheduler->TaskPoolCount        = counts.TotalPoolCount;
-    scheduler->PoolTypeCount        = init->PoolTypeCount;
-    scheduler->PoolFreeList         = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, PAL_TASK_POOL_FREE_LIST, init->PoolTypeCount);
-    scheduler->PoolTypeIds          = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, pal_sint32_t           , init->PoolTypeCount);
-    scheduler->TaskPoolBase         = pool_base;
-    scheduler->IoCompletionPort     = iocp;
-    scheduler->CpuWorkerCount       = init->CpuWorkerThreadCount;
-    scheduler->AioWorkerCount       = init->AioWorkerThreadCount;
-    scheduler->OsWorkerThreadIds    = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, unsigned int           , worker_thread_count);
-    scheduler->OsWorkerThreadHandles= PAL_MemoryArenaAllocateHostArray(&scheduler_arena, HANDLE                 , worker_thread_count);
-    scheduler->WorkerParkSemaphores = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, HANDLE                 , init->CpuWorkerThreadCount);
-    scheduler->ShutdownSignal       = 0;
-    scheduler->ActiveThreadCount    = 0;
-    scheduler->Reserved1            = 0;
-    scheduler->Reserved2            = 0;
-    scheduler->Reserved3            = 0;
-    scheduler->Reserved4            = 0;
-    scheduler->ReadyEventCount      = 0;
-    scheduler->ParkEventCount       = 0;
-    scheduler->ParkedWorkers        = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, PAL_PARKED_WORKER      , init->CpuWorkerThreadCount);
-    scheduler->ParkedWorkerCount    = 0;
-    scheduler->Reserved5            = 0;
+    pool_base                        = base_ptr + sched_size.TaskPoolOffset;
+    scheduler                        = PAL_MemoryArenaAllocateHostType (&scheduler_arena, PAL_TASK_SCHEDULER);
+    scheduler->TaskPoolList          = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, PAL_TASK_POOL*         , counts.TotalPoolCount);
+    scheduler->PoolThreadId          = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, pal_uint32_t           , counts.TotalPoolCount);
+    scheduler->TaskPoolCount         = counts.TotalPoolCount;
+    scheduler->PoolTypeCount         = init->PoolTypeCount;
+    scheduler->PoolFreeList          = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, PAL_TASK_POOL_FREE_LIST, init->PoolTypeCount);
+    scheduler->PoolTypeIds           = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, pal_sint32_t           , init->PoolTypeCount);
+    scheduler->TaskPoolBase          = pool_base;
+    scheduler->IoCompletionPort      = iocp;
+    scheduler->CpuWorkerCount        = init->CpuWorkerThreadCount;
+    scheduler->AioWorkerCount        = init->AioWorkerThreadCount;
+    scheduler->OsWorkerThreadIds     = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, unsigned int           , worker_thread_count);
+    scheduler->OsWorkerThreadHandles = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, HANDLE                 , worker_thread_count);
+    scheduler->WorkerParkSemaphores  = PAL_MemoryArenaAllocateHostArray(&scheduler_arena, HANDLE                 , init->CpuWorkerThreadCount);
+    scheduler->ActiveThreadCount     = 0;
+    scheduler->ShutdownSignal        = 0;
+    scheduler->Reserved1             = 0;
+    scheduler->Reserved2             = 0;
+    scheduler->Reserved3             = 0;
+    scheduler->Reserved4             = 0;
+    scheduler->WakeEventCount        = 0;
+    scheduler->ParkEventCount        = 0;
+    scheduler->ParkedWorkers         = NULL;
     InitializeSRWLock(&scheduler->ParkStateLock);
 
     /* initialize the task pools */
@@ -1403,6 +1428,9 @@ PAL_TaskSchedulerCreate
         scheduler->PoolFreeList[type_index].PoolTypeTotal = type->PoolCount;
         scheduler->PoolFreeList[type_index].PoolTypeFlags = type->PoolFlags;
         scheduler->PoolTypeIds [type_index] = type->PoolTypeId;
+        if (type->PoolTypeId == PAL_TASK_POOL_TYPE_ID_MAIN) {
+            scheduler->MainPoolIndex = global_pool_index;
+        }
 
         /* create all task pools of this type */
         for (type_pool_index = 0, type_pool_count = type->PoolCount; type_pool_index < type_pool_count; ++type_pool_index, ++global_pool_index) {
@@ -1432,31 +1460,38 @@ PAL_TaskSchedulerCreate
              * note that the order of allocations here matter. */
             pool = PAL_MemoryArenaAllocateHostType(&pool_arena, PAL_TASK_POOL);
             pool->TaskScheduler     = scheduler;
+            pool->TaskPoolList      = scheduler->TaskPoolList;
             pool->UserDataBuffer    = PAL_MemoryArenaAllocateHostArray(&pool_arena, pal_uint8_t     , pool_size.UserDataSize);
-            pool->PermitSlotIds     = PAL_MemoryArenaAllocateHostArray(&pool_arena, pal_uint32_t    , PAL_TASKID_MAX_SLOTS_PER_POOL);
-            pool->AllocSlotIds      = PAL_MemoryArenaAllocateHostArray(&pool_arena, pal_uint32_t    , PAL_TASKID_MAX_SLOTS_PER_POOL);
+            pool->PermSlotIds       = PAL_MemoryArenaAllocateHostArray(&pool_arena, pal_uint32_t    , PAL_TASKID_MAX_SLOTS_PER_POOL);
+            pool->FreeSlotIds       = PAL_MemoryArenaAllocateHostArray(&pool_arena, pal_uint32_t    , PAL_TASKID_MAX_SLOTS_PER_POOL);
             pool->ReadyTaskIds      = PAL_MemoryArenaAllocateHostArray(&pool_arena, PAL_TASKID      , PAL_TASKID_MAX_SLOTS_PER_POOL);
             pool->TaskSlotData      = PAL_MemoryArenaAllocateHostArray(&pool_arena, PAL_TASK_DATA   , chunk_size * chunk_count);
-            pool->PermitListData    = PAL_MemoryArenaAllocateHostArray(&pool_arena, PAL_PERMITS_LIST, PAL_TASKID_MAX_SLOTS_PER_POOL);
-            pool->ParkSemaphore     = NULL;
+            pool->PermListData      = PAL_MemoryArenaAllocateHostArray(&pool_arena, PAL_PERMITS_LIST, PAL_TASKID_MAX_SLOTS_PER_POOL);
             pool->PoolIndex         = global_pool_index;
             pool->PoolFlags         = type->PoolFlags;
-            pool->TaskPoolList      = scheduler->TaskPoolList;
+            pool->NextParkPool      = NULL;
+            pool->ParkSemaphore     = NULL;
+            pool->ParkEventCount    = 0;
+            pool->WakeEventCount    = 0;
+            pool->WakePoolId        = 0;
+            pool->Reserved1         = 0;
+            pool->Reserved2         = 0;
+            pool->Reserved3         = 0;
             pool->NextFreePool      = scheduler->PoolFreeList[type_index].FreeListHead;
             pool->MaxTaskSlots      = chunk_count * chunk_size;
-            pool->MaxPermitLists    = 0; /* none pre-committed */
-            pool->SlotAllocNext     = 0;
-            pool->PermitAllocNext   = 0;
-            pool->UserDataSize      = pool_size.UserDataSize;
-            pool->WakeupPoolId      = 0;
-            pool->OsThreadId        = 0;
-            pool->PoolTypeId        = type->PoolTypeId;
+            pool->MaxPermLists      = 0; /* none pre-committed */
             pool->SlotAllocCount    = 0;
-            pool->PermitAllocCount  = 0;
+            pool->SlotAllocNext     = 0;
+            pool->PermAllocCount    = 0;
+            pool->PermAllocNext     = 0;
+            pool->UserDataSize      = pool_size.UserDataSize;
+            pool->PoolTypeId        = type->PoolTypeId;
+            pool->OsThreadId        = 0;
+            pool->Reserved4         = 0;
             pool->SlotFreeCount     = chunk_count * chunk_size;
-            pool->PermitFreeCount   = 0;
-            pool->ReadyPublicPos    = 0;
-            pool->ReadyPrivatePos   = 0;
+            pool->PermFreeCount     = 0;
+            pool->ReadyPubPos       = 0;
+            pool->ReadyPrvPos       = 0;
             /* update the scheduler pool binding table */
             scheduler->TaskPoolList[global_pool_index] = pool;
             scheduler->PoolThreadId[global_pool_index] = 0;
@@ -1605,10 +1640,10 @@ PAL_TaskSchedulerAcquireTaskPool
     } ReleaseSRWLockExclusive(&free_list->TypeLock);
 
     if (task_pool != NULL) {
-        PAL_PERMITS_LIST *permit_data = task_pool->PermitListData;
+        PAL_PERMITS_LIST   *perm_data = task_pool->PermListData;
         PAL_TASK_DATA      *task_data = task_pool->TaskSlotData;
-        pal_uint32_t   *data_slot_ids = task_pool->AllocSlotIds;
-        pal_uint32_t *permit_slot_ids = task_pool->PermitSlotIds;
+        pal_uint32_t   *data_slot_ids = task_pool->FreeSlotIds;
+        pal_uint32_t   *perm_slot_ids = task_pool->PermSlotIds;
 
         if ((bind_flags & PAL_TASK_POOL_BIND_FLAG_MANUAL) == 0) {
             PAL_TaskSchedulerBindPoolToThread(scheduler, task_pool, GetCurrentThreadId());
@@ -1617,30 +1652,30 @@ PAL_TaskSchedulerAcquireTaskPool
         }
 
         /* initialize all of the task state and free lists.
-         * note that this is potentially zeroing megabytes of memory.
-         */
+         * note that this is potentially zeroing megabytes of memory. */
         PAL_ZeroMemory(task_data, task_pool->MaxTaskSlots * sizeof(PAL_TASK_DATA));
         for (i = 0, n = task_pool->MaxTaskSlots; i < n; ++i) {
             data_slot_ids[i] = PAL_TaskSlotPack (i , 0);
         }
-        PAL_ZeroMemory(permit_data, task_pool->MaxPermitLists * sizeof(PAL_PERMITS_LIST));
-        for (i = 0, n = task_pool->MaxPermitLists; i < n; ++i) {
-            permit_slot_ids[i] = i;
+        PAL_ZeroMemory(perm_data, task_pool->MaxPermLists * sizeof(PAL_PERMITS_LIST));
+        for (i = 0, n = task_pool->MaxPermLists; i < n; ++i) {
+            perm_slot_ids[i] = i;
         }
 
         /* initialize the queues and counters */
-        task_pool->SlotAllocNext      = 0;
-        task_pool->PermitAllocNext    = 0;
-        task_pool->WakeupPoolId       = 0;
+        task_pool->NextParkPool       = NULL;
+        task_pool->ParkSemaphore      = 0;
+        task_pool->ParkEventCount     = 0;
+        task_pool->WakeEventCount     = 0;
+        task_pool->WakePoolId         = 0;
         task_pool->SlotAllocCount     = 0;
-        task_pool->PermitAllocCount   = 0;
-        task_pool->ParkEventCount     =~0ULL;
-        task_pool->ReadyEventCount    =~0ULL;
-        task_pool->ParkedWorkerCount  = 0;
-        task_pool->ReadyPublicPos     = 0;
-        task_pool->ReadyPrivatePos    = 0;
-        PAL_AtomicExchange_u64(task_pool->SlotFreeCount  , task_pool->MaxTaskSlots);
-        PAL_AtomicExchange_u64(task_pool->PermitFreeCount, task_pool->MaxPermitLists);
+        task_pool->SlotAllocNext      = 0;
+        task_pool->PermAllocCount     = 0;
+        task_pool->PermAllocNext      = 0;
+        task_pool->SlotFreeCount      = task_pool->MaxTaskSlots;
+        task_pool->PermFreeCount      = task_pool->MaxPermLists;
+        task_pool->ReadyPubPos        = 0;
+        task_pool->ReadyPrvPos        = 0;
     }
     return task_pool;
 }
@@ -1726,14 +1761,15 @@ PAL_TaskCreate
     PAL_TASKID            parent_task
 )
 {
-    pal_uint32_t write_index = 0;
-    pal_uint32_t  pool_index = thread_pool->PoolIndex;
-    pal_uint32_t  *slot_list = thread_pool->AllocSlotIds;
-    pal_uint64_t   alloc_max = thread_pool->SlotAllocCount;
-    pal_uint64_t   alloc_cur = thread_pool->SlotAllocNext;
-    pal_uint32_t  slot_index;
-    pal_uint32_t  generation;
-    pal_uint32_t  freelist_v;
+    PAL_TASK_POOL **pool_list = thread_pool->TaskPoolList;
+    pal_uint32_t  write_index = 0;
+    pal_uint32_t   pool_index = thread_pool->PoolIndex;
+    pal_uint32_t   *slot_list = thread_pool->FreeSlotIds;
+    pal_uint64_t    alloc_max = thread_pool->SlotAllocCount;
+    pal_uint64_t    alloc_cur = thread_pool->SlotAllocNext;
+    pal_uint32_t   slot_index;
+    pal_uint32_t   generation;
+    pal_uint32_t   freelist_v;
 
     if (task_count <= PAL_TASKID_MAX_SLOTS_PER_POOL) {
         for ( ; ; ) {
@@ -1770,7 +1806,7 @@ alloc_complete:
              * the caller must still use PAL_TaskGetData to set the ParentId field for each child. */
             pal_uint32_t   parent_pool = PAL_TaskIdGetTaskPoolIndex(parent_task);
             pal_uint32_t   parent_slot = PAL_TaskIdGetTaskSlotIndex(parent_task);
-            PAL_TASK_DATA *parent_data =&thread_pool->TaskPoolList [parent_pool]->TaskSlotData[parent_slot];
+            PAL_TASK_DATA *parent_data =&pool_list[parent_pool]->TaskSlotData[parent_slot];
             _InterlockedExchangeAdd((volatile LONG*) &parent_data->WorkCount, (LONG) task_count);
         }
         return  0;
@@ -1827,6 +1863,7 @@ PAL_TaskPublish
         PAL_TaskSchedulerWakeWorkers(scheduler, thread_pool, task_id_list, task_count);
     } else {
         /* allocate a permits list from thread_pool */
+        PAL_TASK_POOL    **pool_list = thread_pool->TaskPoolList;
         PAL_TASKID       *start_task = task_id_list;
         pal_uint32_t      pool_index = thread_pool->PoolIndex;
         pal_uint32_t    remain_count = task_count;
@@ -1875,7 +1912,7 @@ PAL_TaskPublish
         for (i = 0; i < dependency_count; ++i) {
             pal_uint32_t   blocking_pidx = PAL_TaskIdGetTaskPoolIndex(dependency_list[i]);
             pal_uint32_t   blocking_sidx = PAL_TaskIdGetTaskSlotIndex(dependency_list[i]);
-            PAL_TASK_DATA *blocking_task =&scheduler->TaskPoolList[blocking_pidx]->TaskSlotData[blocking_sidx];
+            PAL_TASK_DATA *blocking_task =&pool_list[blocking_pidx]->TaskSlotData[blocking_sidx];
             for (j = 0; j < list_count; ++j) {
                 wait_count += PAL_TaskDataPublishPermitsList(blocking_task, list_array[j], dependency_list[i]);
             }
@@ -1889,7 +1926,7 @@ PAL_TaskPublish
                 /* all dependencies have completed */
                 for (i = 0; i < list_count; ++i) {
                     permit_index = PAL_TaskPoolGetSlotIndexForPermitList(thread_pool, list_array[i]);
-                    PAL_TaskPoolMakePermitsListFree(thread_pool, permit_index);
+                    PAL_TaskPoolMakePermListFree(thread_pool, permit_index);
                 }
                 wait_count = 0;
             }

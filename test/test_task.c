@@ -170,6 +170,49 @@ Task_CheckSignal
 }
 
 static void
+Task_SpawnChildren
+(
+    struct PAL_TASK_ARGS *args
+)
+{
+    TIMESTAMP_TASK_DATA     *argp =(TIMESTAMP_TASK_DATA*) args->TaskArguments;
+    PAL_TASK_POOL    *thread_pool = args->CallbackPool;
+    PAL_TASKID          parent_id = args->TaskId;
+    TIMESTAMP_TASK_DATA   *c_args;
+    PAL_TASK              *c_data;
+    pal_usize_t       c_args_size;
+    PAL_TASKID      chunk_ids[32];
+    pal_uint32_t             i, j;
+
+    pal_uint32_t const  NUM_TASKS = 1024;
+    pal_uint32_t const CHUNK_SIZE = PAL_CountOf(chunk_ids);
+    pal_uint32_t const NUM_CHUNKS = NUM_TASKS / CHUNK_SIZE;
+
+    for (i = 0; i < NUM_CHUNKS; ++i) {
+        if (PAL_TaskCreate(thread_pool, chunk_ids, CHUNK_SIZE, parent_id) != 0) {
+        }
+        /* initialize all tasks within the chunk */
+        for (j = 0; j < CHUNK_SIZE; ++j) {
+            if ((c_data = PAL_TaskGetData(thread_pool, chunk_ids[j], &c_args, &c_args_size)) == NULL) {
+            }
+            c_data->TaskMain       = PAL_TaskMain_NoOp;
+            c_data->TaskComplete   = Task_WriteTimestamp;
+            c_data->TaskId         = chunk_ids[j];
+            c_data->ParentId       = parent_id;
+            c_data->CompletionType = PAL_TASK_COMPLETION_TYPE_AUTOMATIC;
+            c_data->TaskFlags      = 0;
+            c_args->Signal         = argp->Signal;
+            c_args->TsArray        = argp->TsArray;
+            c_args->TsCount        = argp->TsCount;
+            c_args->TsIndex        =(argp->TsIndex * NUM_TASKS) + (i * CHUNK_SIZE) + j;
+            c_args->Trigger        = argp->Trigger;
+        }
+        if (PAL_TaskPublish(thread_pool, chunk_ids, CHUNK_SIZE, NULL, 0) != 0) {
+        }
+    }
+}
+
+static void
 Task_SpawnChildInternal_WriteTimestamp
 (
     struct PAL_TASK_ARGS *args
@@ -337,7 +380,7 @@ CreateTaskScheduler
 
     /* the AIO workers are intended to run on hyperthreads and not be very active */
     pool_types[1].PoolTypeId        = PAL_TASK_POOL_TYPE_ID_AIO_WORKER;
-    pool_types[1].PoolCount         = host_cpu.HardwareThreads / host_cpu.ThreadsPerCore;
+    pool_types[1].PoolCount         = 1;//host_cpu.HardwareThreads / host_cpu.ThreadsPerCore;
     pool_types[1].PoolFlags         = PAL_TASK_POOL_FLAG_CREATE  | 
                                       PAL_TASK_POOL_FLAG_PUBLISH | 
                                       PAL_TASK_POOL_FLAG_EXECUTE | 
@@ -348,7 +391,7 @@ CreateTaskScheduler
     if (host_cpu.PhysicalCores > 1 && force_single_core == 0) {
         /* running on a multi-core system */
         pool_types[2].PoolTypeId    = PAL_TASK_POOL_TYPE_ID_CPU_WORKER;
-        pool_types[2].PoolCount     = host_cpu.HardwareThreads - 1;
+        pool_types[2].PoolCount     = host_cpu.HardwareThreads;
         pool_types[1].PoolFlags     = PAL_TASK_POOL_FLAG_CREATE   | 
                                       PAL_TASK_POOL_FLAG_PUBLISH  | 
                                       PAL_TASK_POOL_FLAG_EXECUTE  | 
@@ -458,7 +501,7 @@ FTest_PermitListAllocFree
             /* delete each permits list, returning it to the free pool */
             for (j = 0 , n = PAL_CountOf(lists); j < n; ++j) {
                 list_index = PAL_TaskPoolGetSlotIndexForPermitList(main_pool, lists[j]);
-                PAL_TaskPoolMakePermitsListFree(main_pool, list_index);
+                PAL_TaskPoolMakePermListFree(main_pool, list_index);
             }
         }
         /* pass 2 allocates the same chunk and verifies it */
@@ -484,7 +527,7 @@ FTest_PermitListAllocFree
             /* delete each permits list, returning it to the free pool */
             for (j = 0 , n = PAL_CountOf(lists); j < n; ++j) {
                 list_index = PAL_TaskPoolGetSlotIndexForPermitList(main_pool, lists[j]);
-                PAL_TaskPoolMakePermitsListFree(main_pool, list_index);
+                PAL_TaskPoolMakePermListFree(main_pool, list_index);
             }
         }
     }
@@ -1248,6 +1291,140 @@ cleanup:
     return result;
 }
 
+/* @summary Performance test where all tasks are run on a single background thread.
+ * The tasks are set to autocomplete. Tasks have no children and no dependencies.
+ * @param global_arena The global application memory arena.
+ * @param scratch_arena The application scratch memory arena.
+ * @return Either TEST_PASS or TEST_FAIL.
+ */
+static int
+PTest_RunManyThread_NoDeps_ChildSpawn_Auto
+(
+    struct PAL_MEMORY_ARENA  *global_arena, 
+    struct PAL_MEMORY_ARENA *scratch_arena
+)
+{
+    WIN32_SIGNAL                  signal = {0};
+    TIMESTAMP_TASK_DATA       *task_args = NULL;
+    PAL_TASK                  *task_data = NULL;
+    PAL_TASK_SCHEDULER            *sched = NULL;
+    PAL_TASK_POOL             *main_pool = NULL;
+    PAL_MEMORY_ARENA_MARKER  global_mark;
+    PAL_MEMORY_ARENA_MARKER scratch_mark;
+    pal_uint64_t             *timestamps;
+    pal_uint64_t                tsa, tsb;
+    pal_uint64_t                     tss;
+    pal_uint64_t                     tse;
+    pal_uint64_t                   nanos;
+    pal_uint64_t                  ts_min;
+    pal_uint64_t                  ts_max;
+    pal_uint64_t                  ts_sum;
+    pal_usize_t           task_args_size;
+    pal_sint32_t          complete_count;
+    PAL_TASKID              task_ids[32];
+    pal_uint32_t                 i, j, k;
+    int                           result;
+
+    pal_uint32_t           TOTAL_TASKS;
+    pal_uint32_t            NUM_CHUNKS;
+    pal_uint32_t const TASKS_PER_CHILD = 1024;
+    pal_uint32_t const NUM_ITERS       = 1000;
+    pal_uint32_t const CHUNK_SIZE      = PAL_CountOf(task_ids);
+
+    result       = TEST_PASS;
+    global_mark  = PAL_MemoryArenaMark(global_arena);
+    scratch_mark = PAL_MemoryArenaMark(scratch_arena);
+    ts_min       =~0ULL;
+    ts_max       = 0ULL;
+    ts_sum       = 0ULL;
+
+    if ((sched = CreateTaskScheduler(ALLOW_MULTI_CORE, 0)) == NULL) {
+        assert(0 && "CreateTaskScheduler failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    if ((main_pool = PAL_TaskSchedulerAcquireTaskPool(sched, PAL_TASK_POOL_TYPE_ID_MAIN, 0)) == NULL) {
+        assert(0 && "PAL_TaskSchedulerAcquireTaskPool(MAIN) failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    NUM_CHUNKS  =(sched->CpuWorkerCount + (CHUNK_SIZE-1)) / CHUNK_SIZE;
+    TOTAL_TASKS = sched->CpuWorkerCount * TASKS_PER_CHILD;
+    if ((timestamps = PAL_MemoryArenaAllocateHostArray(global_arena, pal_uint64_t, TOTAL_TASKS)) == NULL) {
+        assert(0 && "Could not allocate timestamps array");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+
+    /* initialize the timestamps array to zero */
+    PAL_ZeroMemory(timestamps, sizeof(pal_uint64_t) * TOTAL_TASKS);
+    if (CreateSignal(&signal) != 0) {
+        assert(0 && "CreateSignal failed");
+        result = TEST_FAIL;
+        goto cleanup;
+    }
+    complete_count = 0;
+
+    tsa = PAL_TimestampInTicks();
+    for (i = 0; i < NUM_ITERS; ++i) {
+        tss=PAL_TimestampInTicks();
+        /* push tasks in batches */
+        for (j = 0; j < NUM_CHUNKS; ++j) {
+            if (PAL_TaskCreate(main_pool, task_ids, CHUNK_SIZE, PAL_TASKID_NONE) != 0) {
+                assert(0 && "PAL_TaskCreate failed");
+                result = TEST_FAIL;
+                goto cleanup;
+            }
+            for (k = 0; k < CHUNK_SIZE; ++k) {
+                if ((task_data = PAL_TaskGetData(main_pool, task_ids[k], &task_args, &task_args_size)) == NULL) {
+                    assert(0 && "PAL_TaskGetData failed");
+                    result = TEST_FAIL;
+                    goto cleanup;
+                }
+                task_data->TaskMain       = Task_SpawnChildren;
+                task_data->TaskComplete   = PAL_TaskComplete_NoOp;
+                task_data->TaskId         = task_ids[k];
+                task_data->ParentId       = PAL_TASKID_NONE;
+                task_data->CompletionType = PAL_TASK_COMPLETION_TYPE_AUTOMATIC;
+                task_data->TaskFlags      = 0;
+                task_args->Signal         =&signal;
+                task_args->TsArray        = timestamps;
+                task_args->TsCount        =&complete_count;
+                task_args->TsIndex        =(j * CHUNK_SIZE) + k;
+                task_args->Trigger        = TOTAL_TASKS;
+            }
+            if (PAL_TaskPublish(main_pool, task_ids, CHUNK_SIZE, NULL, 0) != 0) {
+                assert(0 && "PAL_TaskPublish failed");
+                result = TEST_FAIL;
+                goto cleanup;
+            }
+        }
+        WaitSignal(&signal);
+        tse   = PAL_TimestampInTicks();
+        nanos = PAL_TimestampDeltaNanoseconds(tss, tse);
+#if 0
+        printf("Executed %u tasks in %I64uns (%I64uns/task)\r\n", TOTAL_TASKS, nanos, nanos/TOTAL_TASKS);
+#endif
+        if (nanos < ts_min) ts_min = nanos;
+        if (nanos > ts_max) ts_max = nanos;
+        ts_sum += nanos;
+        ResetSignal(&signal);
+        complete_count = 0;
+    }
+    tsb = PAL_TimestampInTicks();
+
+    printf("TsMin: %I64uns TsMax: %I64uns Avg/Task: %I64uns\r\n", ts_min, ts_max, ts_sum / (NUM_ITERS*TOTAL_TASKS));
+    printf("Total time for %u tasks: %I64uns\r\n", NUM_ITERS*TOTAL_TASKS, PAL_TimestampDeltaNanoseconds(tsa, tsb));
+
+cleanup:
+    DeleteSignal(&signal);
+    DeleteTaskScheduler(sched);
+    PAL_MemoryArenaResetToMarker(scratch_arena, scratch_mark);
+    PAL_MemoryArenaResetToMarker(global_arena, global_mark);
+    return result;
+}
+
 int main
 (
     int    argc, 
@@ -1312,6 +1489,7 @@ int main
     res = FTest_RunOneThread_WithDepsPubFirst_Auto      (&global_arena, &scratch_arena); printf("FTest_RunOneThread_WithDepsPubFirst_Auto      : %d\r\n", res);
 
     PTest_RunOneThread_NoDeps_NoChild_Auto(&global_arena, &scratch_arena);
+    PTest_RunManyThread_NoDeps_ChildSpawn_Auto(&global_arena, &scratch_arena);
 
 cleanup_and_exit:
     PAL_HostMemoryRelease(&scratch_alloc);
