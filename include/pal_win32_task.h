@@ -179,39 +179,13 @@ typedef struct PAL_TASK_SCHEDULER {
  * end -
  */
 
-#if 0
-typedef struct PAL_AIO_REQUEST {
-} PAL_AIO_REQUEST;
-#endif
-
-#ifdef NOTES
-// Decided we can keep up to 256 bytes of data per-task slot.
-// First is some metadata, publicly exposed:
-// - ParentID
-// - EntryPoint
-// - CompletionType
-// - Plenty of room for other stuff here.
-// Next is internal data:
-// - WaitCount
-// - WorkCount
-// - PermitCount
-// - Generation
-// - Has stolen tasks? (can avoid atomic updates if false)
-// - Plenty of room for other stuff here as well.
-// Next is permits list:
-// - Up to 32 permits can be stored
-// Finally per-task data:
-// - Up to 64 bytes are available (16 32-bit values or 8 64-bit values)
-// At 256 bytes/task slot, a task pool of 4K tasks is 1MB, not including queues.
-// At 256 bytes/task slot, a maxed-out task pool is 16MB, not including queues.
-// Queues add a fixed overhead of 384KB/task pool.
-// With 64 task pools at max capacity, we're looking at ~1GB of storage.
-// The public metadata and internal data can easily be combined into a single cacheline.
-// This would bring the storage requirement down to 192 bytes/task slot.
-// A maxed out task pool would then be 12MB/48MB/768MB compared with 16MB/64MB/1024MB.
-// - n.b. these numbers are 64K task pool / 4K task pool w/64 threads / 64K task pool w/64 threads.
-// Personally, I don't think that the extra space is going to matter when running at that scale.
-// I'd rather have the extra space for growth and adding new features.
-#endif
+/* @summary Define the data associated with a fence.
+ * The semantics are similar to a Win32 manual-reset event, but it is implemented as a semaphore.
+ */
+typedef struct PAL_TASK_FENCE {
+    HANDLE                           Semaphore;                /* The Win32 semaphore object. */
+    pal_sint32_t                     ResourceCount;            /* The number of available resources. If this value is less than or equal to zero, one or more threads may be waiting. */
+    pal_uint32_t                     SpinCount;                /* The number of times to spin waiting for the fence to be signaled before putting the thread to sleep. */
+} PAL_TASK_FENCE;
 
 #endif /* __PAL_WIN32_TASK_H__ */

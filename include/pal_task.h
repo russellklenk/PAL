@@ -94,6 +94,9 @@
      PAL_TASKID_VALID_MASK_PACKED)
 #endif
 
+#ifndef PAL_NO_AIO_TASKS
+#endif
+
 /* @summary Forward-declare the types exported by this module.
  */
 struct  PAL_TASK;
@@ -103,6 +106,8 @@ struct  PAL_TASK_POOL_INIT;
 struct  PAL_TASK_SCHEDULER;
 struct  PAL_TASK_SCHEDULER_INIT;
 struct  PAL_TASK_CALLBACK_CONTEXT;
+struct  PAL_TASK_FENCE;
+struct  PAL_TASK_FENCE_INIT;
 
 /* @summary Define a type used to represent a task identifier.
  * Task identifiers are allocated from and associated with a PAL_TASK_POOL bound to a specific OS thread.
@@ -127,8 +132,9 @@ typedef int  (*PAL_TaskWorkerInit_Func)
 
 /* @summary Define the signature for the entry point of a task.
  * @param args A PAL_TASK_ARGS instance specifying data associated with the task and data used to spawn additional tasks.
+ * @return The ID of the continuation task to run immediately, or PAL_TASKID_NONE.
  */
-typedef void (*PAL_TaskMain_Func)
+typedef PAL_TASKID (*PAL_TaskMain_Func)
 (
     struct PAL_TASK_ARGS *args
 );
@@ -214,6 +220,13 @@ typedef struct PAL_TASK_SCHEDULER_INIT {
     struct PAL_TASK_POOL_INIT    *TaskPoolTypes;        /* An array of PoolTypeCount PAL_TASK_POOL_INIT structures, one per pool type. */
     void                         *CreateContext;        /* Opaque data to be passed through to the AioWorkerInitFunc and CpuWorkerInitFunc callbacks during thread initialization. */
 } PAL_TASK_SCHEDULER_INIT;
+
+/* @summary Define the data used to initialize a fence object.
+ */
+typedef struct PAL_TASK_FENCE_INIT {
+    pal_uint32_t                  SpinCount;            /* The number of times to spin in userspace before performing a sleep. */
+    pal_sint32_t                  MaxWaiters;           /* The maximum number of threads that will wait on the fence to become signaled. */
+} PAL_TASK_FENCE_INIT;
 
 /* @summary Define the supported completion types for a task.
  */
@@ -396,7 +409,7 @@ PAL_TaskPublish
 /* @summary Execute tasks on the calling thread until a specific task has completed.
  * This function may execute task main callbacks on the calling thread.
  * This function may execute task completion callbacks on the calling thread.
- * This function returns when the specified task has completed.
+ * This function returns when the specified task has completed, or when the scheduler is deleted.
  * @param thread_context The PAL_TASK_CALLBACK_CONTEXT associated with the calling thread.
  * @param wait_task The identifier of the task to wait for.
  */
@@ -421,10 +434,52 @@ PAL_TaskComplete
     PAL_TASKID                        completed_task
 );
 
-/* @summary Implement a no-op TaskMain callback for use by the application.
- * @param args A PAL_TASK_ARGS instance specifying data associated with the task and data used to spawn additional tasks.
+/* @summary Create a fence object that can be used by the host CPU to wait for an event to occur.
+ * Unlike using PAL_TaskWait, which performs a busy wait and executes work while waiting, waiting on a fence puts the thread to sleep.
+ * The fence can only be put into the signaled state once, after which it must be deleted and recreated.
+ * @param fence The PAL_TASK_FENCE object to initialize.
+ * @return Zero if the fence is successfully initialized, or non-zero if an error occurred.
+ */
+PAL_API(int)
+PAL_TaskFenceCreate
+(
+    struct PAL_TASK_FENCE     *fence, 
+    struct PAL_TASK_FENCE_INIT *init
+);
+
+/* @summary Free resources associated with a fence object initialized by PAL_TaskFenceCreate.
+ * @param fence The PAL_TASK_FENCE object to delete.
  */
 PAL_API(void)
+PAL_TaskFenceDelete
+(
+    struct PAL_TASK_FENCE *fence
+);
+
+/* @summary Set the state of a fence object to signaled, unblocking any threads waiting on the fence.
+ * @param fence The PAL_TASK_FENCE object to signal.
+ */
+PAL_API(void)
+PAL_TaskFenceSignal
+(
+    struct PAL_TASK_FENCE *fence
+);
+
+/* @summary Wait for a fence object to become signaled. 
+ * If the state of the fence is not signaled, the calling thread is put to sleep until the fence becomes signaled.
+ * @param fence The PAL_TASK_FENCE object to wait on.
+ */
+PAL_API(void)
+PAL_TaskFenceWait
+(
+    struct PAL_TASK_FENCE *fence
+);
+
+/* @summary Implement a no-op TaskMain callback for use by the application.
+ * @param args A PAL_TASK_ARGS instance specifying data associated with the task and data used to spawn additional tasks.
+ * @return This function always returns PAL_TASKID_NONE as the continuation task.
+ */
+PAL_API(PAL_TASKID)
 PAL_TaskMain_NoOp
 (
     struct PAL_TASK_ARGS *args

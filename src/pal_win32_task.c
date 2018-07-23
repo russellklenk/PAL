@@ -154,93 +154,123 @@
     (((_slot) << 16) | (_gen))
 #endif
 
-/* @summary Atomically load a 32-bit unsigned integer value, increment it, and store the result back to the same address.
- * @param _addr The address containing the value to modify.
+/* @summary Atomically load a 32-bit signed integer value, add another value to it, and store the result back to the same location.
+ * @param _field The value to modify.
+ * @return The resulting value.
+ */
+#ifndef PAL_AtomicAdd_s32
+#define PAL_AtomicAdd_s32(_field, _add)                                         \
+    (pal_sint32_t)_InterlockedAdd((volatile LONG*)&(_field), (LONG)(_add))
+#endif
+
+/* @summary Atomically load a 32-bit unsigned integer value, increment it, and store the result back to the same location.
+ * @param _field The value to modify.
  * @return The resulting incremented value.
  */
 #ifndef PAL_AtomicIncrement_u32
-#define PAL_AtomicIncrement_u32(_addr)                                         \
-    (pal_uint32_t)_InterlockedIncrement((volatile LONG*)&(_addr))
+#define PAL_AtomicIncrement_u32(_field)                                         \
+    (pal_uint32_t)_InterlockedIncrement((volatile LONG*)&(_field))
 #endif
 
-/* @summary Atomically load a 64-bit unsigned integer value, increment it, and store the result back to the same address.
- * @param _addr The address containing the value to modify.
+/* @summary Atomically load a 64-bit unsigned integer value, increment it, and store the result back to the same location.
+ * @param _field The value to modify.
  * @return The resulting incremented value.
  */
 #ifndef PAL_AtomicIncrement_u64
-#define PAL_AtomicIncrement_u64(_addr)                                         \
-    (pal_uint64_t)_InterlockedIncrement64((volatile LONGLONG*)&(_addr))
+#define PAL_AtomicIncrement_u64(_field)                                         \
+    (pal_uint64_t)_InterlockedIncrement64((volatile LONGLONG*)&(_field))
 #endif
 
-/* @summary Atomically load a 32-bit signed integer value, decrement it, and store the result back to the same address.
- * @param _addr The address containing the value to modify.
+/* @summary Atomically load a 32-bit signed integer value, decrement it, and store the result back to the same location.
+ * @param _field The value to modify.
  * @return The resulting decremented value.
  */
 #ifndef PAL_AtomicDecrement_s32
-#define PAL_AtomicDecrement_s32(_addr)                                         \
-    (pal_sint32_t)_InterlockedDecrement((volatile LONG*)&(_addr))
+#define PAL_AtomicDecrement_s32(_field)                                        \
+    (pal_sint32_t)_InterlockedDecrement((volatile LONG*)&(_field))
 #endif
 
-/* @summary Atomically load a 64-bit unsigned integer value, decrement it, and store the result back to the same address.
- * @param _addr The address containing the value to modify.
+/* @summary Atomically load a 64-bit unsigned integer value, decrement it, and store the result back to the same location.
+ * @param _field The value to modify.
  * @return The resulting decremented value.
  */
 #ifndef PAL_AtomicDecrement_u64
-#define PAL_AtomicDecrement_u64(_addr)                                         \
-    (pal_uint64_t)_InterlockedDecrement64((volatile LONGLONG*)&(_addr))
+#define PAL_AtomicDecrement_u64(_field)                                        \
+    (pal_uint64_t)_InterlockedDecrement64((volatile LONGLONG*)&(_field))
 #endif
 
 /* @summary Atomically load a 64-bit signed integer value, store a new value to the memory location, and return the original value.
- * @param _addr The address containing the value to modify.
- * @param _val The value to store at the given address.
- * @return The value stored at the address prior to the update.
+ * @param _field The value to modify.
+ * @param _val The value to store in the given field.
+ * @return The value stored in the field prior to the update.
  */
 #ifndef PAL_AtomicExchange_s64
-#define PAL_AtomicExchange_s64(_addr, _val)                                    \
-    (pal_sint64_t)_InterlockedExchange64((volatile LONGLONG*)&(_addr), (LONGLONG)(_val))
+#define PAL_AtomicExchange_s64(_field, _val)                                   \
+    (pal_sint64_t)_InterlockedExchange64((volatile LONGLONG*)&(_field), (LONGLONG)(_val))
 #endif
 
 /* @summary Atomically load a 64-bit unsigned integer value, store a new value to the memory location, and return the original value.
- * @param _addr The address containing the value to modify.
- * @param _val The value to store at the given address.
- * @return The value stored at the address prior to the update.
+ * @param _field The value to modify.
+ * @param _val The value to store in the given field.
+ * @return The value stored in the field prior to the update.
  */
 #ifndef PAL_AtomicExchange_u64
-#define PAL_AtomicExchange_u64(_addr, _val)                                    \
-    (pal_uint64_t)_InterlockedExchange64((volatile LONGLONG*)&(_addr), (LONGLONG)(_val))
+#define PAL_AtomicExchange_u64(_field, _val)                                   \
+    (pal_uint64_t)_InterlockedExchange64((volatile LONGLONG*)&(_field), (LONGLONG)(_val))
+#endif
+
+/* @summary Atomically load a 32-bit signed integer value, add (or subtract) another value to it, and return the original value.
+ * @param _field The value to modify.
+ * @param _add The value to add to the value stored in the given field.
+ * @return The value stored in the field prior to the update.
+ */
+#ifndef PAL_AtomicFetchAdd_s32
+#define PAL_AtomicFetchAdd_s32(_field, _add)                                   \
+    (pal_sint32_t)_InterlockedExchangeAdd((volatile LONG*)&(_field), (LONG)(_add))
+#endif
+
+/* @summary Atomically load a 32-bit signed integer value, compare it with an expected value, and if they match, store another value in its place.
+ * @param _field The value to modify.
+ * @param _expect The value the caller expects to be stored in the given field.
+ * @param _desire The value the caller wants to store in the given field if the current value matches the expected value.
+ * @return The value that was loaded from the given field.
+ */
+#ifndef PAL_AtomicCompareAndSwap_s32
+#define PAL_AtomicCompareAndSwap_s32(_field, _expect, _desire)                 \
+    (pal_sint32_t)_InterlockedCompareExchange((volatile LONG*)&(_field), (LONG)(_desire), (LONG)(_expect))
 #endif
 
 /* @summary Atomically load a 32-bit unsigned integer value, compare it with an expected value, and if they match, store another value in its place.
- * @param _addr The address containing the value to modify.
- * @param _expect The value the caller expects to be stored at the given address.
- * @param _desire The value the caller wants to store at the given address if the current value matches the expected value.
- * @return The value that was loaded from the given address.
+ * @param _field The value to modify.
+ * @param _expect The value the caller expects to be stored in the given field.
+ * @param _desire The value the caller wants to store in the given field if the current value matches the expected value.
+ * @return The value that was loaded from the given field.
  */
 #ifndef PAL_AtomicCompareAndSwap_u32
-#define PAL_AtomicCompareAndSwap_u32(_addr, _expect, _desire)                  \
-    (pal_uint32_t)_InterlockedCompareExchange((volatile LONG*)&(_addr), (LONG)(_desire), (LONG)(_expect))
+#define PAL_AtomicCompareAndSwap_u32(_field, _expect, _desire)                 \
+    (pal_uint32_t)_InterlockedCompareExchange((volatile LONG*)&(_field), (LONG)(_desire), (LONG)(_expect))
 #endif
 
 /* @summary Atomically load a 64-bit signed integer value, compare it with an expected value, and if they match, store another value in its place.
- * @param _addr The address containing the value to modify.
- * @param _expect The value the caller expects to be stored at the given address.
- * @param _desire The value the caller wants to store at the given address if the current value matches the expected value.
- * @return The value that was loaded from the given address.
+ * @param _field The value to modify.
+ * @param _expect The value the caller expects to be stored in the given field.
+ * @param _desire The value the caller wants to store in the given field if the current value matches the expected value.
+ * @return The value that was loaded from the given field.
  */
 #ifndef PAL_AtomicCompareAndSwap_s64
-#define PAL_AtomicCompareAndSwap_s64(_addr, _expect, _desire)                  \
-    (pal_sint64_t)_InterlockedCompareExchange64((volatile LONGLONG*)&(_addr), (LONGLONG)(_desire), (LONGLONG)(_expect))
+#define PAL_AtomicCompareAndSwap_s64(_field, _expect, _desire)                 \
+    (pal_sint64_t)_InterlockedCompareExchange64((volatile LONGLONG*)&(_field), (LONGLONG)(_desire), (LONGLONG)(_expect))
 #endif
 
 /* @summary Atomically load a 64-bit unsigned integer value, compare it with an expected value, and if they match, store another value in its place.
- * @param _addr The address containing the value to modify.
- * @param _expect The value the caller expects to be stored at the given address.
- * @param _desire The value the caller wants to store at the given address if the current value matches the expected value.
- * @return The value that was loaded from the given address.
+ * @param _field The value to modify.
+ * @param _expect The value the caller expects to be stored in the given field.
+ * @param _desire The value the caller wants to store in the given field if the current value matches the expected value.
+ * @return The value that was loaded from the given field.
  */
 #ifndef PAL_AtomicCompareAndSwap_u64
-#define PAL_AtomicCompareAndSwap_u64(_addr, _expect, _desire)                  \
-    (pal_uint64_t)_InterlockedCompareExchange64((volatile LONGLONG*)&(_addr), (LONGLONG)(_desire), (LONGLONG)(_expect))
+#define PAL_AtomicCompareAndSwap_u64(_field, _expect, _desire)                 \
+    (pal_uint64_t)_InterlockedCompareExchange64((volatile LONGLONG*)&(_field), (LONGLONG)(_desire), (LONGLONG)(_expect))
 #endif
 
 /* @summary Define the signature of a thread entry point.
@@ -323,6 +353,43 @@ typedef enum PAL_TASK_SCHEDULER_WAKE_RESULT {
     PAL_TASK_SCHEDULER_WAKE_RESULT_WAKEUP     =  1, /* The scheduler woke a waiting thread to process the task. */
 } PAL_TASK_SCHEDULER_WAKE_RESULT;
 
+/* @summary Check the status of a fence object.
+ * @param fence The PAL_TASK_FENCE to check.
+ * @return 1 if the fence state is signaled, or 0 if unsignaled.
+ */
+static PAL_INLINE int
+PAL_TaskFenceTryWait
+(
+    struct PAL_TASK_FENCE *fence
+)
+{
+    pal_sint32_t value;
+    pal_sint32_t count = fence->ResourceCount;
+    _ReadWriteBarrier();
+    while (count > 0) {
+        if((value = PAL_AtomicCompareAndSwap_s32(fence->ResourceCount, count, count-1)) == count) {
+            return 1;
+        } else {
+            count = value;
+        }
+    }
+    return 0;
+}
+
+/* @summary Check the status of a fence object and if unsignaled, put the calling thread into a wait state.
+ * @param fence The PAL_TASK_FENCE to check.
+ */
+static PAL_INLINE void
+PAL_TaskFenceWaitNoSpin
+(
+    struct PAL_TASK_FENCE *fence
+)
+{
+    if (PAL_AtomicFetchAdd_s32(fence->ResourceCount, -1) < 1) {
+        WaitForSingleObject(fence->Semaphore, INFINITE);
+    }
+}
+
 /* @summary Initialize a PAL_TASK_ARGS structure in preparation for invoking a task callback.
  * @param args The PAL_TASK_ARGS instance to initialize.
  * @param data The PAL_TASK_DATA associated with the task. Specify NULL if no task is being executed or completed.
@@ -371,6 +438,20 @@ PAL_DefaultTaskWorkerInit
     return 0;
 }
 
+/* @summary Given a pointer to an OVERLAPPED structure (embedded within PAL_TASK_DATA), return the source PAL_TASK_DATA.
+ * @param ov The OVERLAPPED pointer returned by GetQueuedCompletionStatus.
+ * @return The source PAL_TASK_DATA.
+ */
+static PAL_INLINE struct PAL_TASK_DATA*
+PAL_TaskDataGetFromOVERLAPPED
+(
+    OVERLAPPED *ov
+)
+{
+    pal_uint8_t  *p_base = (pal_uint8_t*) ov;
+    return (PAL_TASK_DATA*)(p_base - offsetof(PAL_TASK_DATA, Overlapped));
+}
+
 /* @summary Convert a permit list pointer into the corresponding array index.
  * @param owner_pool The PAL_TASK_POOL from which the permits list was allocated.
  * The PAL_PERMITS_LIST::PoolIndex field for p_list must match the PAL_TASK_POOL::PoolIndex field for owner_pool.
@@ -395,7 +476,7 @@ PAL_TaskPoolGetSlotIndexForPermitList
  * @param slot_index The zero-based index of the PAL_TASK_DATA slot to mark as available.
  * @param generation The generation value associated with the PAL_TASK_DATA slot.
  */
-static void
+static PAL_INLINE void
 PAL_TaskPoolMakeTaskSlotFree /* this only does the return - not the generation update */
 (
     struct PAL_TASK_POOL *owner_pool,
@@ -414,7 +495,7 @@ PAL_TaskPoolMakeTaskSlotFree /* this only does the return - not the generation u
  * @param list_index The zero-based index of the PAL_PERMITS_LIST being returned to the free pool.
  * This index can be calculated using PAL_TaskPoolGetSlotIndexForPermitList.
  */
-static void
+static PAL_INLINE void
 PAL_TaskPoolMakePermListFree /* this only does the return - not the generation update */
 (
     struct PAL_TASK_POOL *owner_pool, 
@@ -709,6 +790,24 @@ PAL_TaskPoolStealReadyTask
     return PAL_TASKID_NONE;
 }
 
+#if SCHEDULER_NOTES
+Instead of doing what we do now, we can instead have the Wake function XCHG the 
+head-of-list with NULL, thereby claiming the entire list of waiters at that point.
+It can then directly assign tasks to waiting threads and wake them up. If all tasks
+being published are consumed, and there are still waiters in the claimed list, the 
+function returns them to the list using a CAS. This way, the SRWLOCK is not needed.
+
+If, when you go to return waiters to the list, you detect that the WakeEventCount 
+has changed, then you can set the WakeTaskId to PAL_TASKID_NONE and then wake up 
+one additional thread, which should attempt to steal. Repeat until the waiters are
+successfully returned to the list.
+
+This is up to three atomics per-wake:
+1. The XCHG to claim the waiter list
+2. The INC to increment the WakeEventCount 
+3. The CAS to return the waiters to the list (if any remain)
+#endif
+
 /* @summary Attempt to park (put to sleep) a worker thread.
  * Worker threads are only put into a wait state when there's no work available.
  * This function should be called when a worker runs out of work in its local ready-to-run queue.
@@ -997,7 +1096,12 @@ PAL_CpuWorkerThreadMain
     PAL_TASK_DATA         *task_data = NULL;
     void                 *thread_ctx = NULL;
     unsigned int           exit_code = 0;
+    pal_uint32_t    num_continuation = 0;
+    pal_uint32_t    num_private_take = 0;
+    pal_uint32_t    num_park_attempt = 0;
+    pal_uint32_t   num_steal_attempt = 0;
     PAL_TASKID          current_task = PAL_TASKID_NONE;
+    PAL_TASKID     continuation_task = PAL_TASKID_NONE;
     pal_sint32_t        pool_type_id = PAL_TASK_POOL_TYPE_ID_CPU_WORKER;
     pal_uint32_t     pool_bind_flags = PAL_TASK_POOL_BIND_FLAGS_NONE;
     pal_sint32_t         wake_reason = PAL_TASK_SCHEDULER_PARK_RESULT_WAKEUP;
@@ -1062,17 +1166,29 @@ PAL_CpuWorkerThreadMain
                 task_data  =&pool_list[pool_index]->TaskSlotData[slot_index];
                 task_args.TaskArguments = task_data->Arguments;
                 task_args.TaskId        = current_task;
-                task_data->PublicData.TaskMain(&task_args);
+                continuation_task       = task_data->PublicData.TaskMain(&task_args);
                 if (task_data->PublicData.CompletionType == PAL_TASK_COMPLETION_TYPE_AUTOMATIC) {
                     PAL_TaskPoolCompleteTask(&exec, pool_list[pool_index], task_data, current_task, slot_index, generation);
                 }
 
-                /* executing the task may have produced one or more additional
-                 * work items in the ready-to-run deque for this thread.
-                 * keep executing tasks until the queue drains.
+                /* if the task returned a continuation task, run that task immediately.
+                 * otherwise, the task that just executed may have produced additional 
+                 * ready-to-run work items in the deque for this thread, so try and take
+                 * one of those. as a last resort, attempt to steal work from another 
+                 * thread to address dynamic load imbalance.
                  */
-                if((current_task = PAL_TaskPoolTakeReadyTask(thread_pool)) == PAL_TASKID_NONE) {
-                    current_task = PAL_TaskSchedulerStealWork(scheduler, &steal_state);
+                if((current_task = continuation_task) != PAL_TASKID_NONE) {
+                    num_continuation++;
+                    continue;
+                } else if ((current_task = PAL_TaskPoolTakeReadyTask(thread_pool)) != PAL_TASKID_NONE) {
+                    num_private_take++;
+                    continue;
+                } else if ((current_task = PAL_TaskSchedulerStealWork(scheduler, &steal_state)) != PAL_TASKID_NONE) {
+                    num_steal_attempt++;
+                    continue;
+                } else {
+                    num_park_attempt++;
+                    continue;
                 }
             }
         }
@@ -1096,17 +1212,22 @@ PAL_AioWorkerThreadMain
 {
     PAL_AIO_WORKER_THREAD_INIT *init =(PAL_AIO_WORKER_THREAD_INIT*) argp;
     PAL_TASK_SCHEDULER    *scheduler = init->TaskScheduler;
+    PAL_TASK_POOL        **pool_list = init->TaskScheduler->TaskPoolList;
     PAL_TASK_POOL       *thread_pool = NULL;
+    PAL_TASK_DATA         *task_data = NULL;
     void                 *thread_ctx = NULL;
     OVERLAPPED                   *ov = NULL;
     HANDLE                      iocp = init->CompletionPort;
     pal_sint32_t        pool_type_id = PAL_TASK_POOL_TYPE_ID_AIO_WORKER;
     pal_uint32_t     pool_bind_flags = PAL_TASK_POOL_BIND_FLAGS_NONE;
+    pal_uint32_t          pool_index = 0;
+    pal_uint32_t          slot_index = 0;
+    pal_uint32_t          generation = 0;
+    PAL_TASKID               task_id = 0;
     ULONG_PTR                    key = 0;
     DWORD                     nbytes = 0;
     unsigned int           exit_code = 0;
     PAL_TASK_CALLBACK_CONTEXT   exec;
-    PAL_TASK_ARGS          task_args;
 
     /* set the thread name for diagnostics tools */
     PAL_ThreadSetName("I/O Worker");
@@ -1126,7 +1247,6 @@ PAL_AioWorkerThreadMain
 
     /* initialize the PAL_TASK_CALLBACK_CONTEXT and PAL_TASK_ARGS */
     PAL_TaskCallbackContextInit(&exec, scheduler, thread_pool, thread_ctx);
-    PAL_TaskArgsInit(&task_args, NULL, &exec, PAL_TASKID_NONE);
 
     /* thread initialization has completed */
     SetEvent(init->ReadySignal); init = NULL;
@@ -1135,10 +1255,14 @@ PAL_AioWorkerThreadMain
         while (scheduler->ShutdownSignal == 0) {
             /* wait for events on the I/O completion port */
             if (GetQueuedCompletionStatus(iocp, &nbytes, &key, &ov, INFINITE)) {
-                if (key == PAL_COMPLETION_KEY_TASKID) {
-                    /* execute a task; nbytes is the task ID */
-                } else if (ov != NULL) {
+                if (ov != NULL) {
                     /* an asynchronous I/O request has completed */
+                    task_data   = PAL_TaskDataGetFromOVERLAPPED(ov);
+                    task_id     = task_data->PublicData.TaskId;
+                    pool_index  = PAL_TaskIdGetTaskPoolIndex(task_id);
+                    slot_index  = PAL_TaskIdGetTaskSlotIndex(task_id);
+                    generation  = PAL_TaskIdGetGeneration(task_id);
+                    PAL_TaskPoolCompleteTask(&exec, pool_list[pool_index], task_data, task_id, slot_index, generation);
                 } else if (key == PAL_COMPLETION_KEY_SHUTDOWN) {
                     break;
                 }
@@ -1807,7 +1931,7 @@ alloc_complete:
             pal_uint32_t   parent_pool = PAL_TaskIdGetTaskPoolIndex(parent_task);
             pal_uint32_t   parent_slot = PAL_TaskIdGetTaskSlotIndex(parent_task);
             PAL_TASK_DATA *parent_data =&pool_list[parent_pool]->TaskSlotData[parent_slot];
-            _InterlockedExchangeAdd((volatile LONG*) &parent_data->WorkCount, (LONG) task_count);
+            PAL_AtomicFetchAdd_s32(parent_data->WorkCount, task_count);
         }
         return  0;
     } else {
@@ -1922,7 +2046,7 @@ PAL_TaskPublish
              * race with the blocking tasks to ready these tasks. */
             pal_uint32_t completed_count = dependency_count - wait_count;
             pal_uint32_t    permit_index;
-            if (_InterlockedExchangeAdd((volatile LONG*)&list_array[0]->WaitCount, (LONG) completed_count) == 0) {
+            if (PAL_AtomicAdd_s32(list_array[0]->WaitCount, completed_count) == 0) {
                 /* all dependencies have completed */
                 for (i = 0; i < list_count; ++i) {
                     permit_index = PAL_TaskPoolGetSlotIndexForPermitList(thread_pool, list_array[i]);
@@ -1940,7 +2064,6 @@ PAL_TaskPublish
     return 0;
 }
 
-#if 0
 PAL_API(void)
 PAL_TaskWait
 (
@@ -1949,16 +2072,27 @@ PAL_TaskWait
 )
 {
     if (PAL_TaskIdGetValid(wait_task)) {
-        PAL_TASK_SCHEDULER *sched = thread_context->TaskScheduler;
-        PAL_TASK_POOL **pool_list = thread_context->TaskScheduler->TaskPoolList;
-        pal_uint32_t    wait_pidx = PAL_TaskIdGetTaskPoolIndex(wait_task);
-        pal_uint32_t    wait_slot = PAL_TaskIdGetTaskSlotIndex(wait_task);
-        pal_uint32_t   generation = PAL_TaskIdGetGeneration(wait_task);
-        pal_uint32_t  current_gen;
-        pal_uint32_t    state_tag;
-        PAL_TASK_DATA  *wait_data;
-        PAL_TASK_DATA  *task_data;
-        PAL_TASK_ARGS        args;
+        PAL_TASK_SCHEDULER        *sched = thread_context->TaskScheduler;
+        PAL_TASK_POOL        **pool_list = thread_context->TaskScheduler->TaskPoolList;
+        pal_uint32_t           wait_pidx = PAL_TaskIdGetTaskPoolIndex(wait_task);
+        pal_uint32_t           wait_slot = PAL_TaskIdGetTaskSlotIndex(wait_task);
+        pal_uint32_t          generation = PAL_TaskIdGetGeneration(wait_task);
+        PAL_TASKID     continuation_task = PAL_TASKID_NONE;
+        PAL_TASKID          current_task = PAL_TASKID_NONE;
+        pal_uint32_t         current_gen;
+        pal_uint32_t           state_tag;
+        pal_uint32_t          pool_index;
+        pal_uint32_t          slot_index;
+        pal_uint32_t          task_gener;
+        PAL_TASK_DATA         *wait_data;
+        PAL_TASK_DATA         *task_data;
+        PAL_TASK_ARGS          task_args;
+        PAL_TASK_STEAL_STATE steal_state;
+
+        /* initialize task execution state */
+        PAL_TaskArgsInit(&task_args, NULL, thread_context, PAL_TASKID_NONE);
+        PAL_ZeroMemory(&steal_state, sizeof(steal_state));
+        steal_state.MainPoolIndex  = sched->MainPoolIndex;
 
         /* retrieve the data for the task being waited on */
         wait_data   =&pool_list[wait_pidx]->TaskSlotData[wait_slot];
@@ -1971,11 +2105,48 @@ PAL_TaskWait
          * the generation values remain the same, execute other work. 
          */
         while (current_gen == generation) {
-            /* remember to check sched->ShutdownSignal */
+            /* attempt find some work, following the same logic as a worker thread.
+             * first attempt to run the continuation task.
+             * if there is no continuation task, attempt to take a task from the local deque.
+             * if that fails, attempt to steal work from another thread.
+             */
+            if ((current_task = continuation_task) == PAL_TASKID_NONE) {
+                if ((current_task = PAL_TaskPoolTakeReadyTask(thread_context->CallbackPool)) == PAL_TASKID_NONE) {
+                    if ((current_task = PAL_TaskSchedulerStealWork(sched, &steal_state)) == PAL_TASKID_NONE) {
+                        YieldProcessor();
+                        if (sched->ShutdownSignal == 0) {
+                            state_tag   = wait_data->StateTag;
+                            current_gen = PAL_TaskStateTagGetGeneration(state_tag);
+                            continue;
+                        } else {
+                            /* shutdown was signaled */
+                            break;
+                        }
+                    }
+                }
+            }
+            /* run the task acquired by this thread */
+            pool_index = PAL_TaskIdGetTaskPoolIndex(current_task);
+            slot_index = PAL_TaskIdGetTaskSlotIndex(current_task);
+            task_gener = PAL_TaskIdGetGeneration(current_task);
+            task_data  =&pool_list[pool_index]->TaskSlotData[slot_index];
+            task_args.TaskArguments = task_data->Arguments;
+            task_args.TaskId        = current_task;
+            continuation_task       = task_data->PublicData.TaskMain(&task_args);
+            if (task_data->PublicData.CompletionType == PAL_TASK_COMPLETION_TYPE_AUTOMATIC) {
+                PAL_TaskPoolCompleteTask(thread_context, pool_list[pool_index], task_data, current_task, slot_index, task_gener);
+            }
+            /* reset for the next iteration */
+            if (sched->ShutdownSignal == 0) {
+                state_tag   = wait_data->StateTag;
+                current_gen = PAL_TaskStateTagGetGeneration(state_tag);
+            } else {
+                /* shutdown was signaled */
+                break;
+            }
         }
     }
 }
-#endif
 
 PAL_API(void)
 PAL_TaskComplete
@@ -1993,13 +2164,69 @@ PAL_TaskComplete
     PAL_TaskPoolCompleteTask(thread_context, owner_pool, task_data, completed_task, task_slot, generation);
 }
 
+#if 0
+PAL_API(int)
+PAL_TaskFenceCreate
+(
+    struct PAL_TASK_FENCE *fence
+)
+{
+    if ((fence->Semaphore = CreateSemaphore(NULL, 0, LONG_MAX, NULL)) == NULL) {
+        return -1;
+    }
+    fence->ResourceCount = 0;
+    fence->SpinCount     = 128;
+    return 0;
+}
+
 PAL_API(void)
+PAL_TaskFenceDelete
+(
+    struct PAL_TASK_FENCE *fence
+)
+{
+    if (fence->Semaphore != NULL) {
+        CloseHandle(fence->Semaphore);
+        fence->Semaphore = NULL;
+    }
+}
+
+PAL_API(void)
+PAL_TaskFenceSignal
+(
+    struct PAL_TASK_FENCE *fence
+)
+{
+    pal_sint32_t old_count;
+    if ((old_count = (pal_sint32_t)_InterlockedExchangeAdd((volatile LONG*)&fence->ResourceCount, LONG_MAX)) < 0) {
+        ReleaseSemaphore(fence->Semaphore, -old_count, NULL);
+    }
+}
+
+PAL_API(void)
+PAL_TaskFenceWait
+(
+    struct PAL_TASK_FENCE *fence
+)
+{
+    pal_uint32_t spin_count = fence->SpinCount;
+    while (spin_count > 0) {
+        if (PAL_TaskFenceTryWait(fence))
+            return;
+        --spin_count;
+    }
+    PAL_TaskFenceWaitNoSpin(fence);
+}
+#endif
+
+PAL_API(PAL_TASKID)
 PAL_TaskMain_NoOp
 (
     struct PAL_TASK_ARGS *args
 )
 {
     PAL_UNUSED_ARG(args);
+    return PAL_TASKID_NONE;
 }
 
 PAL_API(void)

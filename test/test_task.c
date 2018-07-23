@@ -136,7 +136,7 @@ AtomicIncrement32
  * This can be used to evaluate the execution or completion order of a set of tasks.
  * @param args Data associated with task execution. TaskArguments points to a TIMESTAMP_TASK_DATA.
  */
-static void
+static PAL_TASKID
 Task_WriteTimestamp
 (
     struct PAL_TASK_ARGS *args
@@ -149,13 +149,14 @@ Task_WriteTimestamp
     if ((count = AtomicIncrement32(argp->TsCount)) == argp->Trigger) {
         SignalSignal(argp->Signal);
     }
+    return PAL_TASKID_NONE;
 }
 
 /* @summary Define the entry point or completion callback that writes the current timestamp into an array.
  * This can be used to evaluate the execution or completion order of a set of tasks.
  * @param args Data associated with task execution. TaskArguments points to a TIMESTAMP_TASK_DATA.
  */
-static void
+static PAL_TASKID
 Task_CheckSignal
 (
     struct PAL_TASK_ARGS *args
@@ -167,9 +168,10 @@ Task_CheckSignal
     if ((count = AtomicIncrement32(argp->TsCount)) == argp->Trigger) {
         SignalSignal(argp->Signal);
     }
+    return PAL_TASKID_NONE;
 }
 
-static void
+static PAL_TASKID
 Task_SpawnChildren
 (
     struct PAL_TASK_ARGS *args
@@ -210,9 +212,10 @@ Task_SpawnChildren
         if (PAL_TaskPublish(thread_pool, chunk_ids, CHUNK_SIZE, NULL, 0) != 0) {
         }
     }
+    return PAL_TASKID_NONE;
 }
 
-static void
+static PAL_TASKID
 Task_SpawnChildInternal_WriteTimestamp
 (
     struct PAL_TASK_ARGS *args
@@ -253,12 +256,12 @@ Task_SpawnChildInternal_WriteTimestamp
         goto error;
     }
     /* don't wait for the child to complete */
-    return;
+    return PAL_TASKID_NONE;
 
 error:
     /* TODO: need a better way to signal errors */
     SignalSignal(argp->Signal);
-    return;
+    return PAL_TASKID_NONE;
 }
 
 #if 0
@@ -1201,7 +1204,7 @@ PTest_RunOneThread_NoDeps_NoChild_Auto
     int                           result;
 
     pal_uint32_t const NUM_ITERS  = 1000;
-    pal_uint32_t const ITER_SIZE  = 4096;
+    pal_uint32_t const ITER_SIZE  = 8192;
     pal_uint32_t const CHUNK_SIZE = PAL_CountOf(task_ids);
     pal_uint32_t const NUM_CHUNKS = ITER_SIZE / PAL_CountOf(task_ids);
     pal_uint32_t const WAIT_COUNT = ITER_SIZE;
@@ -1213,7 +1216,7 @@ PTest_RunOneThread_NoDeps_NoChild_Auto
     ts_max       = 0ULL;
     ts_sum       = 0ULL;
 
-    if ((sched = CreateTaskScheduler(ALLOW_MULTI_CORE, 0)) == NULL) {
+    if ((sched = CreateTaskScheduler(FORCE_SINGLE_CORE, 0)) == NULL) {
         assert(0 && "CreateTaskScheduler failed");
         result = TEST_FAIL;
         goto cleanup;
