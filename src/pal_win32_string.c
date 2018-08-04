@@ -580,22 +580,28 @@ PAL_StringTableIntern
     pal_uint32_t         char_type
 )
 {
+    pal_uint32_t const  GROW_SIZE = 64UL * 1024; /* 64KB */
+    pal_uint32_t const  ALIGNMENT = 4;
     pal_uint32_t             i, n;
     pal_uint32_t             hash;
     pal_uint32_t            len_b;
     pal_uint32_t            len_c;
+    pal_uint32_t          nb_need;
+    pal_uint32_t           nb_pad;
     pal_uint32_t           eindex;
     pal_uint32_t           bindex;
+    pal_uint32_t          eoffset;
     pal_uint32_t          *hashes;
     PAL_STRING_HASH_CHUNK *bucket;
     PAL_STRING_DATA_ENTRY  *entry;
-    pal_uint8_t              sptr;
+    pal_uint8_t             *sptr;
 
     if (str != NULL) {
-        hash   = table->HashString(str, &len_b, &len_c);
-        eindex = table->StringCount;
-        bindex = hash & table->HashBucketCount;
-        bucket = table->HashBuckets[bindex];
+        hash    = table->HashString(str, &len_b, &len_c);
+        eoffset = table->StringDataNext;
+        eindex  = table->StringCount;
+        bindex  = hash & table->HashBucketCount;
+        bucket  = table->HashBuckets[bindex];
         while (bucket != NULL) {
             for (i = 0, n = bucket->ItemCount, hashes = bucket->EntryHash; i < n; ++i) {
                 if (hashes[i] == hash) {
@@ -614,28 +620,104 @@ PAL_StringTableIntern
         }
 
         /* the string doesn't exist in the table - intern it */
+        bucket   = table->HashBuckets[bindex];
+        eoffset  = table->StringDataNext; /* byte offset in storage block */
+        eindex   = table->StringCount;    /* index in StringList array    */
+        nb_need  = sizeof(pal_uint32_t);  /* entry index in storage block */
+        nb_need += len_b;                 /* string data, including nul   */
+        nb_pad   = PAL_AlignUp(eoffset + nb_need, ALIGNMENT) - (eoffset + nb_need);
+        nb_need += nb_pad;
+
         if (table->StringCount == table->StringCommitCount) {
             /* commit an additional 64KB of string entry data */
-        }
-        if ((table->StringDataNext + 4 + blah blah) == table->DataCommitSize) {
-            /* commit an additional 64KB of storage block data */
-        }
-        if (table->HashBuckets[bindex] == NULL) {
-            if (table->HashFreeList != NULL) {
-                bucket = table->HashFreeList;
-                table->HashFreeList  = bucket->NextChunk;
-                bucket->NextChunk    = NULL;
-                bucket->ItemCount    = 0;
-                table->HashBuckets[bindex] = bucket;
-            } else {
-                /* commit additional data in the hash allocation */
+            pal_uint32_t commit_size = GROW_SIZE;
+            pal_uint32_t  num_commit = table->StringReserveCount - table->StringCommitCount;
+            pal_uint32_t   nb_commit = num_commit * sizeof(PAL_STRING_DATA_ENTRY);
+            if (nb_commit > commit_size) { /* commit a max of 64KB at once */
+                nb_commit = commit_size;
+                num_commit= nb_commit / sizeof(PAL_STRING_DATA_ENTRY);
             }
+            if (VirtualAlloc(&table->StringList[table->StringCount], nb_commit, MEM_COMMIT, PAGE_READWRITE) == NULL) {
+                return NULL;
+            }
+            table->StringCommitCount += num_commit;
         }
-        entry = &table->StringList[eindex];
-        table->StringCount++;
-    }
+        if ((eoffset + nb_need) >= table->DataCommitSize) {
+            /* commit additional storage block data */
+            pal_uint32_t  commit_size = GROW_SIZE;
+            if (nb_need > commit_size) {
+                commit_size = nb_need;
+                commit_size = PAL_AlignUp(commit_size, GROW_SIZE);
+                if((table->DataCommitSize + commit_size) > table->DataReserveSize) {
+                    /* clamp to maximum data size */
+                    commit_size = table->DataReserveSize - table->DataCommitSize;
+                }
+                if (commit_size < nb_need) {
+                    /* not enough data storage */
+                    return NULL;
+                }
+            }
+            if (VirtualAlloc(&table->StringDataBase[table->DataCommitSize], commit_size, MEM_COMMIT, PAGE_READWRITE) == NULL) {
+                return NULL;
+            }
+            table->DataCommitSize += commit_size;
+        }
 
-    /* store the entry index in the four bytes immediately preceeding str in the data block */
+        /* get the hash chunk where the item will be inserted */
+        if (bucket == NULL || bucket->ItemCount == PAL_STRING_HASH_CHUNK_CAPACITY) {
+            if (table->HashFreeList == NULL) {
+                /* commit an additional block of hash chunks */
+                pal_uint32_t   commit_size = GROW_SIZE;
+                pal_uint32_t    num_commit = commit_size / sizeof(PAL_STRING_HASH_CHUNK);
+                if((table->HashCommitCount + num_commit) > table->HashReserveCount) {
+                    num_commit = table->HashReserveCount - table->HashCommitCount;
+                    commit_size= num_commit * sizeof(PAL_STRING_HASH_CHUNK);
+                }
+                if (VirtualAlloc(&table->HashDataBase[table->HashCommitCount*sizeof(PAL_STRING_HASH_CHUNK)], commit_size, MEM_COMMIT, PAGE_READWRITE) == NULL) {
+                    return NULL;
+                }
+                for (i = table->HashCommitCount, n = num_commit; i < n; ++i) {
+                    PAL_STRING_HASH_CHUNK *chunk =(PAL_STRING_HASH_CHUNK*) &table->HashDataBase[i * sizeof(PAL_STRING_HASH_CHUNK)];
+                    chunk->NextChunk     = table->HashFreeList;
+                    chunk->ItemCount     = 0;
+                    table->HashFreeList  = chunk;
+                }
+                table->HashCommitCount += num_commit;
+            }
+            /* take a chunk from the head of the free list.
+             * insert it at the head of the hash bucket list. */
+            bucket = table->HashFreeList;
+            table->HashFreeList        = bucket->NextChunk;
+            bucket->NextChunk          = table->HashBuckets[bindex];
+            bucket->ItemCount          = 0;
+            table->HashBuckets[bindex] = bucket;
+        }
+
+        /* append the item to the hash chunk */
+        bucket->EntryHash [bucket->ItemCount] = hash;
+        bucket->EntryIndex[bucket->ItemCount] = eindex;
+        bucket->ItemCount++;
+
+        /* cache the string information in the table */
+        entry = &table->StringList[eindex];
+        entry->StringInfo.ByteLength       = len_b;
+        entry->StringInfo.CharLength       = len_c;
+        entry->StringInfo.CharacterType    = char_type;
+        entry->ByteOffset = eoffset + sizeof(pal_uint32_t);
+        table->StringCount++;
+
+        /* copy the string data to the storage block */
+        table->StringDataNext = eoffset + nb_need;
+        sptr  = table->StringDataBase + eoffset;
+        sptr += PAL_Write_ui32(sptr, eindex, 0);
+        PAL_CopyMemory(sptr, str, len_b);
+        sptr += len_b;
+        for(i = 0; i < nb_pad; ++i) {
+            *sptr++ = 0;
+        }
+        return table->StringDataBase + eoffset + sizeof(pal_uint32_t);
+    }
+    return NULL;
 }
 
 PAL_API(int)

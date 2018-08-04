@@ -70,7 +70,7 @@ typedef pal_uint32_t (*PAL_StringHash32_Func)(void const *str, pal_uint32_t *len
 typedef struct PAL_STRING_INFO {
     pal_uint32_t                 ByteLength;                   /* The length of the string, including the terminating nul, in bytes. */
     pal_uint32_t                 CharLength;                   /* The length of the string, not including the terminating nul, in characters. */
-    pal_sint32_t                 CharacterType;                /* One of the values of the PAL_STRING_CHAR_TYPE enumeration, specifying the character encoding. */
+    pal_uint32_t                 CharacterType;                /* One of the values of the PAL_STRING_CHAR_TYPE enumeration, specifying the character encoding. */
 } PAL_STRING_INFO;
 
 /* @summary Define the data used to configure a string table instance.
