@@ -472,17 +472,23 @@ PAL_StringTableCreate
     }
 
     /* commit memory for the table - committed pages are zero-initialized */
-    if (VirtualAlloc(table_addr, sizes.TableCommitSize, MEM_COMMIT, PAGE_READWRITE) != table_addr) {
-        error_code  = GetLastError();
-        goto cleanup_and_fail;
+    if (sizes.TableCommitSize > 0) {
+        if (VirtualAlloc(table_addr, sizes.TableCommitSize, MEM_COMMIT, PAGE_READWRITE) != table_addr) {
+            error_code  = GetLastError();
+            goto cleanup_and_fail;
+        }
     }
-    if (VirtualAlloc(hash_addr , sizes.HashCommitSize , MEM_COMMIT, PAGE_READWRITE) != hash_addr) {
-        error_code  = GetLastError();
-        goto cleanup_and_fail;
+    if (sizes.HashCommitSize > 0) {
+        if (VirtualAlloc(hash_addr , sizes.HashCommitSize , MEM_COMMIT, PAGE_READWRITE) != hash_addr) {
+            error_code  = GetLastError();
+            goto cleanup_and_fail;
+        }
     }
-    if (VirtualAlloc(data_addr , sizes.DataCommitSize , MEM_COMMIT, PAGE_READWRITE) != data_addr) {
-        error_code  = GetLastError();
-        goto cleanup_and_fail;
+    if (sizes.DataCommitSize > 0) {
+        if (VirtualAlloc(data_addr , sizes.DataCommitSize , MEM_COMMIT, PAGE_READWRITE) != data_addr) {
+            error_code  = GetLastError();
+            goto cleanup_and_fail;
+        }
     }
     
     /* initialize a memory arena to sub-allocate from the table allocation */
@@ -600,7 +606,7 @@ PAL_StringTableIntern
         hash    = table->HashString(str, &len_b, &len_c);
         eoffset = table->StringDataNext;
         eindex  = table->StringCount;
-        bindex  = hash & table->HashBucketCount;
+        bindex  = hash &(table->HashBucketCount-1);
         bucket  = table->HashBuckets[bindex];
         while (bucket != NULL) {
             for (i = 0, n = bucket->ItemCount, hashes = bucket->EntryHash; i < n; ++i) {
@@ -648,14 +654,14 @@ PAL_StringTableIntern
             if (nb_need > commit_size) {
                 commit_size = nb_need;
                 commit_size = PAL_AlignUp(commit_size, GROW_SIZE);
-                if((table->DataCommitSize + commit_size) > table->DataReserveSize) {
-                    /* clamp to maximum data size */
-                    commit_size = table->DataReserveSize - table->DataCommitSize;
-                }
-                if (commit_size < nb_need) {
-                    /* not enough data storage */
-                    return NULL;
-                }
+            }
+            if((table->DataCommitSize + commit_size) > table->DataReserveSize) {
+                /* clamp to maximum data size */
+                commit_size = table->DataReserveSize - table->DataCommitSize;
+            }
+            if (commit_size < nb_need) {
+                /* not enough data storage */
+                return NULL;
             }
             if (VirtualAlloc(&table->StringDataBase[table->DataCommitSize], commit_size, MEM_COMMIT, PAGE_READWRITE) == NULL) {
                 return NULL;
