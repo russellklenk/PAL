@@ -2,10 +2,10 @@
  * @summary Implements a basic hello world application.
  */
 #include <stdio.h>
-#include "pal_display.h"
+#include "pal_wsi.h"
 
 #include "pal_win32_memory.c"
-#include "pal_win32_display.c"
+#include "pal_win32_wsi.c"
 
 int main
 (

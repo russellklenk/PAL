@@ -1,8 +1,8 @@
 /**
- * @summary Implement the PAL_Display* APIs for the Win32 desktop platform.
+ * @summary Implement the PAL Window System Interface APIs for the Win32 desktop platform.
  */
 #include <initguid.h>
-#include "pal_win32_display.h"
+#include "pal_win32_wsi.h"
 
 /* @summary WM_DPICHANGED is defined for Windows 8.1 and later only.
  */
@@ -287,6 +287,33 @@ PAL_WindowSystemProcessDisplayUpdates
     return res;
 }
 
+/* @summary Retrieve the position and size of the monitor containing a window.
+ * @param data The PAL_WINDOW_DATA to update.
+ * @param monitor The handle of the monitor containing the window.
+ */
+static void
+PAL_WindowDataUpdateDisplayGeometry
+(
+    struct PAL_WINDOW_DATA *data, 
+    HMONITOR             monitor
+)
+{
+    PAL_WINDOW_SYSTEM *wsi = data->WindowSystem;
+    PAL_DISPLAY_DATA *disp = wsi->ActiveDisplays;
+    pal_uint32_t      i, n;
+
+    for (i = 0, n = wsi->DisplayCount; i < n; ++i) {
+        if (disp[i].MonitorHandle == monitor) {
+            data->DisplayHandle    = monitor;
+            data->DisplayPositionX = disp[i].DisplayMode.dmPosition.x;
+            data->DisplayPositionY = disp[i].DisplayMode.dmPosition.y;
+            data->DisplaySizeX     = disp[i].DisplayMode.dmPelsWidth;
+            data->DisplaySizeY     = disp[i].DisplayMode.dmPelsHeight;
+            return;
+        }
+    }
+}
+
 /* @summary Update the window position and size, and the window client size.
  * @param data The PAL_WINDOW_DATA to update.
  * @param hwnd The handle of the associated window.
@@ -349,6 +376,7 @@ PAL_CopyWindowDataToWindowState
     state->UpdateTime          = PAL_TimestampInTicks();
     state->EventFlags          = data->EventFlags;
     state->EventCount          =(data->EventFlags != 0);
+    state->StatusFlags         = data->StatusFlags;
     state->DisplayDpiX         = data->DisplayDpiX;
     state->DisplayDpiY         = data->DisplayDpiY;
     state->DisplayPositionX    = data->DisplayPositionX;
@@ -576,7 +604,7 @@ PAL_WindowSystemProcessWindowUpdates
     PAL_HandleTableVisit(&wsi->WindowTable, &visitor);
 }
 
-/* @summary Perform processing for the WM_DEVMODECHANGE message. This message is sent to top-level windows when a display mode changes.
+/* @summary Perform processing for the WM_DISPLAYCHANGE message. This message is sent to top-level windows when a display mode changes.
  * @param hwnd The HWND of the window that received the message.
  * @param msg The Windows message identifier.
  * @param wparam The WPARAM value associated with the message.
@@ -686,6 +714,568 @@ PAL_WndProc_Notify
             } break;
         case WM_DISPLAYCHANGE:
             { result = PAL_WndProc_Notify_WM_DISPLAYCHANGE(wsi, hwnd, wparam, lparam);
+            } break;
+        default:
+            { /* pass the message to the default handler */
+              result = DefWindowProc(hwnd, msg, wparam, lparam);
+            } break;
+    }
+    return result;
+}
+
+/* @summary Perform processing for the WM_CREATE message. This resizes the window so that its client area has the desired dimensions, accounting for DPI and window chrome.
+ * @param data The PAL_WINDOW_DATA associated with the window that received the message.
+ * @param hwnd The HWND of the window that received the message.
+ * @param wparam The WPARAM value associated with the message.
+ * @param lparam The LPARAM value associated with the message.
+ * @return A message-specific value indicating that the message was processed.
+ */
+static LRESULT
+PAL_WndProc_WM_CREATE
+(
+    struct PAL_WINDOW_DATA *data, 
+    HWND                    hwnd, 
+    WPARAM                wparam, 
+    LPARAM                lparam
+)
+{
+    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    DWORD      style =(DWORD)GetWindowLong(hwnd, GWL_STYLE);
+    UINT       dpi_x = 0;
+    UINT       dpi_y = 0;
+    RECT          rc;
+
+    GetDpiForMonitor_Fn(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y);
+
+    if (data->DisplayHandle != monitor)
+    {   /* save the update monitor attributes */
+        data->EventFlags |= PAL_WINDOW_EVENT_FLAG_MONITOR_CHANGED;
+        PAL_WindowDataUpdateDisplayGeometry(data, monitor);
+    }
+
+    /* save the DPI of the monitor on which the window was created */
+    if (data->DisplayDpiX != dpi_x || data->DisplayDpiY != dpi_y)
+    {   /* the DPI has changed */
+        data->EventFlags |= PAL_WINDOW_EVENT_FLAG_DPI_CHANGED;
+        data->DisplayDpiX = dpi_x;
+        data->DisplayDpiY = dpi_y;
+    }
+
+    if (style != WS_POPUP)
+    {   /* resize the window to account for any chrome and borders.
+         * at the same time, convert from logical to physical pixels.
+         */
+        rc.left   = 0; rc.top = 0;
+        rc.right  = PAL_LogicalToPhysicalPixels(data->RestoreSizeX, dpi_x);
+        rc.bottom = PAL_LogicalToPhysicalPixels(data->RestoreSizeY, dpi_y);
+        AdjustWindowRectEx(&rc , style, FALSE , GetWindowLong(hwnd, GWL_EXSTYLE));
+        SetWindowPos(hwnd, NULL, 0,  0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOZORDER);
+        /* this is a windowed window style */
+        data->StatusFlags |= PAL_WINDOW_STATUS_FLAG_WINDOWED;
+    }
+    else
+    {   /* this is a fullscreen window style */
+        data->StatusFlags |= PAL_WINDOW_STATUS_FLAG_FULLSCREEN;
+    }
+
+    /* retrieve the current window geometry */
+    PAL_WindowDataUpdateWindowGeometry(data, hwnd, dpi_x, dpi_y);
+
+    /* the window was created, positioned and sized */
+    data->EventFlags |= PAL_WINDOW_EVENT_FLAG_CREATED;
+    data->EventFlags |= PAL_WINDOW_EVENT_FLAG_MONITOR_CHANGED;
+    data->EventFlags |= PAL_WINDOW_EVENT_FLAG_POSITION_CHANGED;
+    data->EventFlags |= PAL_WINDOW_EVENT_FLAG_SIZE_CHANGED;
+
+    PAL_UNUSED_ARG(wparam);
+    PAL_UNUSED_ARG(lparam);
+    return 0;
+}
+
+/* @summary Perform processing for the WM_ACTIVATE message. This message is sent when the window becomes active or inactive.
+ * @param data The PAL_WINDOW_DATA associated with the window that received the message.
+ * @param hwnd The HWND of the window that received the message.
+ * @param wparam The WPARAM value associated with the message.
+ * @param lparam The LPARAM value associated with the message.
+ * @return A message-specific value indicating that the message was processed.
+ */
+static LRESULT
+PAL_WndProc_WM_ACTIVATE
+(
+    struct PAL_WINDOW_DATA *data, 
+    HWND                    hwnd, 
+    WPARAM                wparam,
+    LPARAM                lparam
+)
+{
+    int    active = LOWORD(wparam);
+    int minimized = HIWORD(wparam);
+
+    /* if active is non-zero, hwnd_active is the handle of the window being deactivated.
+     * if active is zero, hwnd_active is the handle of the window being activated.
+     */
+    if (active == 0 && minimized)
+    {   /* this window has just been de-activated and minimized */
+        data->EventFlags |= PAL_WINDOW_EVENT_FLAG_DEACTIVATED;
+        data->EventFlags |= PAL_WINDOW_EVENT_FLAG_HIDDEN;
+    }
+    if (active && minimized)
+    {   /* this window has just been activated */
+        data->EventFlags |= PAL_WINDOW_EVENT_FLAG_ACTIVATED;
+        data->EventFlags |= PAL_WINDOW_EVENT_FLAG_SHOWN;
+    }
+    return DefWindowProc(hwnd, WM_ACTIVATE, wparam, lparam);
+}
+
+/* @summary Perform processing for the WM_DPICHANGED message. This message is sent when a window is moved to a display with a different DPI setting.
+ * The window is resized to account for the DPI change and any window chrome.
+ * @param data The PAL_WINDOW_DATA associated with the window that received the message.
+ * @param hwnd The HWND of the window that received the message.
+ * @param wparam The WPARAM value associated with the message.
+ * @param lparam The LPARAM value associated with the message.
+ * @return A message-specific value indicating that the message was processed.
+ */
+static LRESULT
+PAL_WndProc_WM_DPICHANGED
+(
+    struct PAL_WINDOW_DATA *data, 
+    HWND                    hwnd, 
+    WPARAM                wparam,
+    LPARAM                lparam
+)
+{
+    HMONITOR   monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    pal_uint32_t flags = PAL_WINDOW_EVENT_FLAGS_NONE;
+    UINT         dpi_x = LOWORD(wparam);
+    UINT         dpi_y = HIWORD(wparam);
+    DWORD        style =(DWORD) GetWindowLong(hwnd, GWL_STYLE);
+    RECT         *sugg =(RECT*)(lparam); /* suggested new position and size */
+    RECT            rc;
+
+    if (data->DisplayHandle != monitor)
+    {   /* save the update monitor attributes */
+        data->EventFlags |= PAL_WINDOW_EVENT_FLAG_MONITOR_CHANGED;
+        PAL_WindowDataUpdateDisplayGeometry(data, monitor);
+    }
+    data->DisplayDpiX = dpi_x;
+    data->DisplayDpiY = dpi_y;
+
+    if (style != WS_POPUP)
+    {   /* resize the window to account for any chrome and borders.
+         * at the same time, convert from logical to physical pixels.
+         * use the window position suggested by the operating system.
+         */
+        if (sugg->left != data->WindowPositionX || sugg->top != data->WindowPositionY) {
+            flags |= PAL_WINDOW_EVENT_FLAG_POSITION_CHANGED;
+        }
+        rc.left    = sugg->left; 
+        rc.top     = sugg->top;
+        rc.right   = sugg->left + PAL_LogicalToPhysicalPixels(data->RestoreSizeX, dpi_x);
+        rc.bottom  = sugg->top  + PAL_LogicalToPhysicalPixels(data->RestoreSizeY, dpi_y);
+        AdjustWindowRectEx(&rc , style, FALSE, GetWindowLong(hwnd, GWL_EXSTYLE));
+        SetWindowPos(hwnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOACTIVATE | SWP_NOZORDER);
+    }
+
+    /* retrieve the current window geometry */
+    PAL_WindowDataUpdateWindowGeometry(data, hwnd, dpi_x, dpi_y);
+
+    /* update the window event flags */
+    data->EventFlags |= PAL_WINDOW_EVENT_FLAG_DPI_CHANGED;
+    data->EventFlags |= PAL_WINDOW_EVENT_FLAG_SIZE_CHANGED;
+    data->EventFlags |= flags;
+    return 0;
+}
+
+/* @summary Perform processing for the WM_CLOSE message. This message is sent when the user closes a window by clicking or a keyboard chord, or when the CloseWindow API is called.
+ * @param data The PAL_WINDOW_DATA associated with the window that received the message.
+ * @param hwnd The HWND of the window that received the message.
+ * @param wparam The WPARAM value associated with the message.
+ * @param lparam The LPARAM value associated with the message.
+ * @return A message-specific value indicating that the message was processed.
+ */
+static LRESULT
+PAL_WndProc_WM_CLOSE
+(
+    struct PAL_WINDOW_DATA *data, 
+    HWND                    hwnd, 
+    WPARAM                wparam,
+    LPARAM                lparam
+)
+{   /* mark the window as being closed */
+    data->StatusFlags |= PAL_WINDOW_STATUS_FLAG_CLOSED;
+    data->EventFlags  |= PAL_WINDOW_EVENT_FLAG_CLOSED;
+    /* make the window disappear, but do not destroy it */
+    ShowWindow(hwnd, SW_HIDE);
+    PAL_UNUSED_ARG(wparam);
+    PAL_UNUSED_ARG(lparam);
+    return 0;
+}
+
+/* @summary Perform processing for the WM_DESTROY message. This message is sent when the window is actually destroyed by calling the DestroyWindow API.
+ * @param data The PAL_WINDOW_DATA associated with the window that received the message.
+ * @param hwnd The HWND of the window that received the message.
+ * @param wparam The WPARAM value associated with the message.
+ * @param lparam The LPARAM value associated with the message.
+ * @return A message-specific value indicating that the message was processed.
+ */
+static LRESULT
+PAL_WndProc_WM_DESTROY
+(
+    struct PAL_WINDOW_DATA *data, 
+    HWND                    hwnd, 
+    WPARAM                wparam,
+    LPARAM                lparam
+)
+{   /* mark the window as being destroyed */
+    data->EventFlags |= PAL_WINDOW_EVENT_FLAG_DESTROYED;
+    /* post WM_QUIT to terminate the message pump */
+    PostQuitMessage(0);
+    PAL_UNUSED_ARG(hwnd);
+    PAL_UNUSED_ARG(wparam);
+    PAL_UNUSED_ARG(lparam);
+    return 0;
+}
+
+/* @summary Perform processing for the WM_MOVE message. This message is sent when the window has been moved on the desktop.
+ * @param data The PAL_WINDOW_DATA associated with the window that received the message.
+ * @param hwnd The HWND of the window that received the message.
+ * @param wparam The WPARAM value associated with the message.
+ * @param lparam The LPARAM value associated with the message.
+ * @return A message-specific value indicating that the message was processed.
+ */
+static LRESULT
+PAL_WndProc_WM_MOVE
+(
+    struct PAL_WINDOW_DATA *data, 
+    HWND                    hwnd, 
+    WPARAM                wparam,
+    LPARAM                lparam
+)
+{
+    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    UINT       dpi_x = 0;
+    UINT       dpi_y = 0;
+
+    GetDpiForMonitor_Fn(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y);
+
+    if (data->DisplayHandle != monitor)
+    {   /* save the update monitor attributes */
+        data->EventFlags |= PAL_WINDOW_EVENT_FLAG_MONITOR_CHANGED;
+        PAL_WindowDataUpdateDisplayGeometry(data, monitor);
+    }
+    if (data->DisplayDpiX != dpi_x || data->DisplayDpiY != dpi_y)
+    {   /* save the DPI of the monitor on which the window is positioned */
+        data->EventFlags  |= PAL_WINDOW_EVENT_FLAG_DPI_CHANGED;
+        data->DisplayDpiX  = dpi_x;
+        data->DisplayDpiY  = dpi_y;
+    }
+
+    /* update the window geometry to reflect the new location */
+    PAL_WindowDataUpdateWindowGeometry(data, hwnd, dpi_x, dpi_y);
+
+    /* mark the window has having been moved */
+    data->EventFlags |= PAL_WINDOW_EVENT_FLAG_POSITION_CHANGED;
+    PAL_UNUSED_ARG(wparam);
+    PAL_UNUSED_ARG(lparam);
+    return 0;
+}
+
+/* @summary Perform processing for the WM_SIZE message. This message is sent when the window has been resized.
+ * @param data The PAL_WINDOW_DATA associated with the window that received the message.
+ * @param hwnd The HWND of the window that received the message.
+ * @param wparam The WPARAM value associated with the message.
+ * @param lparam The LPARAM value associated with the message.
+ * @return A message-specific value indicating that the message was processed.
+ */
+static LRESULT
+PAL_WndProc_WM_SIZE
+(
+    struct PAL_WINDOW_DATA *data, 
+    HWND                    hwnd, 
+    WPARAM                wparam,
+    LPARAM                lparam
+)
+{
+    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    UINT       dpi_x = 0;
+    UINT       dpi_y = 0;
+
+    GetDpiForMonitor_Fn(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y);
+
+    if (data->DisplayHandle != monitor)
+    {   /* save the update monitor attributes */
+        data->EventFlags |= PAL_WINDOW_EVENT_FLAG_MONITOR_CHANGED;
+        PAL_WindowDataUpdateDisplayGeometry(data, monitor);
+    }
+    if (data->DisplayDpiX != dpi_x || data->DisplayDpiY != dpi_y)
+    {   /* save the DPI of the monitor on which the window is positioned */
+        data->EventFlags  |= PAL_WINDOW_EVENT_FLAG_DPI_CHANGED;
+        data->DisplayDpiX  = dpi_x;
+        data->DisplayDpiY  = dpi_y;
+    }
+
+    /* update the window geometry to reflect the new size */
+    PAL_WindowDataUpdateWindowGeometry(data, hwnd, dpi_x, dpi_y);
+
+    /* mark the window has having been moved */
+    data->EventFlags |= PAL_WINDOW_EVENT_FLAG_SIZE_CHANGED;
+    PAL_UNUSED_ARG(wparam);
+    PAL_UNUSED_ARG(lparam);
+    return 0;
+}
+
+/* @summary Perform processing for the WM_SHOWWINDOW message. This message is sent when the window is being shown or hidden.
+ * @param data The PAL_WINDOW_DATA associated with the window that received the message.
+ * @param hwnd The HWND of the window that received the message.
+ * @param wparam The WPARAM value associated with the message.
+ * @param lparam The LPARAM value associated with the message.
+ * @return A message-specific value indicating that the message was processed.
+ */
+static LRESULT
+PAL_WndProc_WM_SHOWWINDOW
+(
+    struct PAL_WINDOW_DATA *data, 
+    HWND                    hwnd, 
+    WPARAM                wparam,
+    LPARAM                lparam
+)
+{
+    if (wparam)
+    {   /* the window is being shown */
+        HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        UINT       dpi_x = 0;
+        UINT       dpi_y = 0;
+
+        GetDpiForMonitor_Fn(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y);
+
+        if (data->DisplayHandle != monitor)
+        {   /* save the update monitor attributes */
+            data->EventFlags |= PAL_WINDOW_EVENT_FLAG_MONITOR_CHANGED;
+            PAL_WindowDataUpdateDisplayGeometry(data, monitor);
+        }
+        if (data->DisplayDpiX != dpi_x || data->DisplayDpiY != dpi_y)
+        {   /* save the DPI of the monitor on which the window is positioned */
+            data->EventFlags  |= PAL_WINDOW_EVENT_FLAG_DPI_CHANGED;
+            data->DisplayDpiX  = dpi_x;
+            data->DisplayDpiY  = dpi_y;
+        }
+
+        /* update the window geometry to reflect the new size */
+        PAL_WindowDataUpdateWindowGeometry(data, hwnd, dpi_x, dpi_y);
+
+        /* mark the window has having been moved */
+        data->EventFlags |= PAL_WINDOW_EVENT_FLAG_SHOWN;
+    }
+    else
+    {   /* the window is being hidden */
+        data->EventFlags |= PAL_WINDOW_EVENT_FLAG_HIDDEN;
+    }
+    PAL_UNUSED_ARG(wparam);
+    PAL_UNUSED_ARG(lparam);
+    return DefWindowProc(hwnd, WM_SHOWWINDOW, wparam, lparam);
+}
+
+/* @summary Perform processing for the WM_DISPLAYCHANGE message. This message is sent to top-level windows when a display mode changes.
+ * @param data The PAL_WINDOW_DATA associated with the window that received the message.
+ * @param hwnd The HWND of the window that received the message.
+ * @param wparam The WPARAM value associated with the message.
+ * @param lparam The LPARAM value associated with the message.
+ * @return A message-specific value indicating that the message was processed.
+ */
+static LRESULT CALLBACK
+PAL_WndProc_WM_DISPLAYCHANGE
+(
+    struct PAL_WINDOW_DATA *data, 
+    HWND                    hwnd, 
+    WPARAM                wparam,
+    LPARAM                lparam
+)
+{   /* wparam is the bit depth of the display */
+    /* lparam low word is the display width, high word is the height */
+    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    UINT       dpi_x = 0;
+    UINT       dpi_y = 0;
+
+    GetDpiForMonitor_Fn(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y);
+
+    if (data->DisplayHandle != monitor)
+    {   /* save the update monitor attributes */
+        data->EventFlags |= PAL_WINDOW_EVENT_FLAG_MONITOR_CHANGED;
+        PAL_WindowDataUpdateDisplayGeometry(data, monitor);
+    }
+    if (data->DisplayDpiX != dpi_x || data->DisplayDpiY != dpi_y)
+    {   /* save the DPI of the monitor on which the window is positioned */
+        data->EventFlags  |= PAL_WINDOW_EVENT_FLAG_DPI_CHANGED;
+        data->DisplayDpiX  = dpi_x;
+        data->DisplayDpiY  = dpi_y;
+    }
+
+    /* update the window geometry to reflect the new size */
+    PAL_WindowDataUpdateWindowGeometry(data, hwnd, dpi_x, dpi_y);
+    data->EventFlags |= PAL_WINDOW_EVENT_FLAG_MODE_CHANGED;
+    return DefWindowProc(hwnd, WM_DISPLAYCHANGE, wparam, lparam);
+}
+
+/* @summary Perform processing for the WM_SYSCOMMAND message. This message is used to handle Alt+Enter to toggle fullscreen/windowed mode.
+ * @param data The PAL_WINDOW_DATA associated with the window that received the message.
+ * @param hwnd The HWND of the window that received the message.
+ * @param wparam The WPARAM value associated with the message.
+ * @param lparam The LPARAM value associated with the message.
+ * @return A message-specific value indicating that the message was processed.
+ */
+static LRESULT
+PAL_WndProc_WM_SYSCOMMAND
+(
+    struct PAL_WINDOW_DATA *data, 
+    HWND                    hwnd, 
+    WPARAM                wparam,
+    LPARAM                lparam
+)
+{   /* MSDN says that the low four bits of wparam are used by the system.
+     * mask off the low four bits of wparam prior to testing its value.
+     */
+    if ((wparam & 0xFFF0) == SC_KEYMENU)
+    {   /* check for the character code for Enter/Return */
+        if (lparam == VK_RETURN)
+        {   /* Alt+Enter was pressed - toggle the window style */
+            if (data->StatusFlags & PAL_WINDOW_STATUS_FLAG_WINDOWED)
+            {   /* toggle to fullscreen */
+                HMONITOR    monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                MONITORINFO moninfo;
+                RECT             rc;
+
+                /* retrieve and save the current window position and size */
+                GetWindowRect(hwnd, &rc);
+                data->RestorePositionX    =(pal_sint32_t) rc.left;
+                data->RestorePositionY    =(pal_sint32_t) rc.top;
+                data->RestoreSizeX        =(pal_uint32_t)(rc.right - rc.left);
+                data->RestoreSizeY        =(pal_uint32_t)(rc.bottom - rc.top);
+                data->RestoreStyle        =(DWORD       ) GetWindowLong(hwnd, GWL_STYLE);
+                data->RestoreStyleEx      =(DWORD       ) GetWindowLong(hwnd, GWL_EXSTYLE);
+
+                /* retrieve information about the monitor containing the window */
+                moninfo.cbSize = sizeof(MONITORINFO);
+                GetMonitorInfo(monitor, &moninfo);
+
+                /* switch the window style to a fullscreen style */
+                rc = moninfo.rcMonitor;
+                SetWindowLong(hwnd, GWL_STYLE, WS_POPUP);
+                SetWindowPos (hwnd, HWND_TOP , rc.left, rc.top, rc.right-rc.left, rc.bottom-rc.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+                
+                /* note that the window is now in fullscreen mode */
+                data->StatusFlags &=~PAL_WINDOW_STATUS_FLAG_WINDOWED;
+                data->StatusFlags |= PAL_WINDOW_STATUS_FLAG_FULLSCREEN;
+                data->EventFlags  |= PAL_WINDOW_EVENT_FLAG_GO_FULLSCREEN;
+            }
+            else
+            {   /* toggle to windowed */
+                SetWindowLong(hwnd, GWL_STYLE  , data->RestoreStyle);
+                SetWindowLong(hwnd, GWL_EXSTYLE, data->RestoreStyleEx);
+                SetWindowPos (hwnd, HWND_TOP, data->RestorePositionX, data->RestorePositionY, (int) data->RestoreSizeX, (int) data->RestoreSizeY, SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+
+                /* note that the window is now in windowed mode */
+                data->StatusFlags |= PAL_WINDOW_STATUS_FLAG_WINDOWED;
+                data->StatusFlags &=~PAL_WINDOW_STATUS_FLAG_FULLSCREEN;
+                data->EventFlags  |= PAL_WINDOW_EVENT_FLAG_GO_WINDOWED;
+            }
+            return 0;
+        }
+    }
+    return DefWindowProc(hwnd, WM_SYSCOMMAND, wparam, lparam);
+}
+
+/* @summary Implement the message callback for any window created and managed by the WSI.
+ * @param hwnd The HWND of the window that received the message.
+ * @param msg The Windows message identifier.
+ * @param wparam The WPARAM value associated with the message.
+ * @param lparam The LPARAM value associated with the message.
+ * @return A message-specific value indicating the result of processing the message.
+ */
+static LRESULT CALLBACK
+PAL_WndProc
+(
+    HWND     hwnd, 
+    UINT      msg, 
+    WPARAM wparam, 
+    LPARAM lparam
+)
+{
+    PAL_WINDOW_DATA *data = NULL;
+    LRESULT        result = 0;
+
+    /* WM_NCCREATE performs special handling to store the state associated with the window.
+     * The handler for WM_NCCREATE executes before the call to CreateWindowEx returns.
+     */
+    if (msg == WM_NCCREATE)
+    {
+        CREATESTRUCT *cs = (CREATESTRUCT*) lparam;
+        SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR) cs->lpCreateParams);
+        ((PAL_WINDOW_DATA*) cs->lpCreateParams)->OsWindowHandle = hwnd;
+        return DefWindowProc(hwnd, msg, wparam, lparam);
+    }
+
+    /* WndProc may receive several messages prior to receiving WM_NCCREATE.
+     * These messages are processed by the default handler.
+     */
+    if ((data = (PAL_WINDOW_DATA*) GetWindowLongPtr(hwnd, GWLP_USERDATA)) == NULL)
+    {   /* let the default handler process the message */
+        return DefWindowProc(hwnd, msg, wparam, lparam);
+    }
+
+    /* Process the window messages the application is interested in.
+     */
+    switch (msg)
+    {
+        case WM_ACTIVATE:
+            { /* the user is activating or deactivating the window */
+              result = PAL_WndProc_WM_ACTIVATE(data, hwnd, wparam, lparam);
+            } break;
+        case WM_CREATE:
+            { /* retrieve the monitor DPI and size the window appropriately */
+              result = PAL_WndProc_WM_CREATE(data, hwnd, wparam, lparam);
+            } break;
+        case WM_CLOSE:
+            { /* mark the window as closed but do not destroy the window */
+              result = PAL_WndProc_WM_CLOSE(data, hwnd, wparam, lparam);
+            } break;
+        case WM_DESTROY:
+            { /* post the WM_QUIT message that causes the main loop to terminate */
+              result = PAL_WndProc_WM_DESTROY(data, hwnd, wparam, lparam);
+            } break;
+        case WM_SHOWWINDOW:
+            { /* the window is being shown or hidden */
+              result = PAL_WndProc_WM_SHOWWINDOW(data, hwnd, wparam, lparam);
+            } break;
+        case WM_WINDOWPOSCHANGING:
+            { /* eat this message to prevent automatic resizing due to device loss */
+            } break;
+        case WM_MOVE:
+            { /* the window has finished being moved */
+              result = PAL_WndProc_WM_MOVE(data, hwnd, wparam, lparam);
+            } break;
+        case WM_SIZE:
+            { /* the window has finished being sized */
+              result = PAL_WndProc_WM_SIZE(data, hwnd, wparam, lparam);
+            } break;
+        case WM_DISPLAYCHANGE:
+            { /* the display mode has been changed */
+              result = PAL_WndProc_WM_DISPLAYCHANGE(data, hwnd, wparam, lparam);
+            } break;
+        case WM_SYSCOMMAND:
+            { /* handle Alt+Enter to toggle between fullscreen and windowed */
+              result = PAL_WndProc_WM_SYSCOMMAND(data, hwnd, wparam, lparam);
+            } break;
+        case WM_ERASEBKGND:
+            { /* tell Windows we erased the background */
+              result = 1;
+            } break;
+        case WM_PAINT:
+            { /* validate the entire client rectangle */
+              ValidateRect(hwnd, NULL);
+            } break;
+        case WM_DPICHANGED:
+            { /* retrieve the updated DPI settings and size the window appropriately */
+              result = PAL_WndProc_WM_DPICHANGED(data, hwnd, wparam, lparam);
             } break;
         default:
             { /* pass the message to the default handler */
@@ -935,4 +1525,89 @@ PAL_WindowSystemQueryDisplayInfo
         return -1;
     }
 }
+
+PAL_API(int)
+PAL_WindowSystemQueryWindowDisplay
+(
+    struct PAL_DISPLAY_INFO *info, 
+    struct PAL_WINDOW_SYSTEM *wsi, 
+    PAL_WINDOW             window
+)
+{
+    PAL_WINDOW_OBJECT obj;
+    if (PAL_WindowObjectResolve(&obj, wsi, window) == 0) {
+        PAL_WINDOW_DATA  *data = obj.WindowData;
+        PAL_DISPLAY_DATA *disp = wsi->ActiveDisplays;
+        HMONITOR       monitor = MonitorFromWindow(data->OsWindowHandle, MONITOR_DEFAULTTONEAREST);
+        pal_uint32_t      i, n;
+
+        for (i = 0, n = wsi->DisplayCount; i < n; ++i) {
+            if (disp[i].MonitorHandle == monitor) {
+                PAL_DisplayDataToDisplayInfo(info, &disp[i], i);
+                return 0;
+            }
+        }
+        PAL_ZeroMemory(info, sizeof(PAL_DISPLAY_INFO));
+        return -1;
+    } else {
+        PAL_ZeroMemory(info, sizeof(PAL_DISPLAY_INFO));
+        return -1;
+    }
+}
+
+#if 0
+PAL_API(PAL_WINDOW)
+PAL_WindowCreate
+(
+    struct PAL_WINDOW_STATE *state, 
+    struct PAL_WINDOW_SYSTEM  *wsi, 
+    struct PAL_WINDOW_INIT   *init
+);
+typedef struct PAL_WINDOW_INIT {
+    struct PAL_DISPLAY_INFO           *TargetDisplay;          /* The target display. If specified, window position and size are clamped to the display. */
+    pal_char_t const                  *WindowTitle;            /* A nul-terminated string specifying the window title. */
+    pal_uint32_t                       CreateFlags;            /* One or more bitwise-OR'd values of the PAL_WINDOW_CREATE_FLAGS enumeration. */
+    pal_uint32_t                       StyleFlags;             /* One or more bitwise-OR'd values of the PAL_WINDOW_STYLE enumeration. */
+    pal_sint32_t                       PositionX;              /* The x-coordinate of the upper-left corner of the window in virtual display space. If zero, and a target display is specified, this value is taken from the target display. */
+    pal_sint32_t                       PositionY;              /* The y-coordinate of the upper-left corner of the window in virtual display space. If zero, and a target display is specified, this value is taken from the target display. */
+    pal_uint32_t                       SizeX;                  /* The horizontal dimension of the window client area in logical pixels. If zero, and a target display is specified, this value is taken from the target display. */
+    pal_uint32_t                       SizeY;                  /* The vertical dimension of the window client area in logical pixels. If zero, and a target display is specified, this value is taken from the target display. */
+} PAL_WINDOW_INIT;
+
+PAL_API(void)
+PAL_WindowDelete
+(
+    struct PAL_WINDOW_STATE *state, 
+    struct PAL_WINDOW_SYSTEM  *wsi, 
+    PAL_WINDOW              window
+);
+
+PAL_API(int)
+PAL_WindowQueryState
+(
+    struct PAL_WINDOW_STATE *state, 
+    struct PAL_WINDOW_SYSTEM  *wsi, 
+    PAL_WINDOW              window
+);
+
+PAL_API(int)
+PAL_WindowUpdateState
+(
+    struct PAL_WINDOW_STATE *state, 
+    struct PAL_WINDOW_SYSTEM  *wsi, 
+    PAL_WINDOW              window
+);
+
+PAL_API(int)
+PAL_WindowIsClosed
+(
+    struct PAL_WINDOW_STATE *state
+);
+
+PAL_API(int)
+PAL_WindowIsFullscreen
+(
+    struct PAL_WINDOW_STATE *state
+);
+#endif
 

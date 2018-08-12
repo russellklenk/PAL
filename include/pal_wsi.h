@@ -1,10 +1,9 @@
 /**
- * @summary Define the PAL types and API entry points used for working with
- * display devices attached to the system and creating and managing windows
- * on those display devices.
+ * @summary Define the PAL types and API entry points used for working the 
+ * native windowing system on the host.
  */
-#ifndef __PAL_DISPLAY_H__
-#define __PAL_DISPLAY_H__
+#ifndef __PAL_WSI_H__
+#define __PAL_WSI_H__
 
 #ifndef PAL_NO_INCLUDES
 #   include "pal.h"
@@ -59,6 +58,7 @@ typedef struct PAL_WINDOW_STATE {
     pal_uint64_t                       UpdateTime;             /* The nanosecond timestamp at which the state was last updated. */
     pal_uint32_t                       EventFlags;             /* One or more bitwise OR'd PAL_WINDOW_EVENT_FLAGS indicating changes that have occurred since the previous update. */
     pal_uint32_t                       EventCount;             /* The number of events that were processed since the previous update. */
+    pal_uint32_t                       StatusFlags;            /* One or more bitwise OR'd PAL_WINDOW_STATUS_FLAGS specifying the current window state. */
     pal_uint32_t                       DisplayDpiX;            /* The horizontal dots-per-inch setting of the display containing the window. */
     pal_uint32_t                       DisplayDpiY;            /* The vertical dots-per-inch setting of the display containing the window. */
     pal_sint32_t                       DisplayPositionX;       /* The display top-left corner position, in virtual display space. */
@@ -203,6 +203,97 @@ PAL_WindowSystemQueryDisplayInfo
     pal_uint32_t    display_index
 );
 
+/* @summary Retrieve information about the display output containing the majority of an application window.
+ * @param info Pointer to a PAL_DISPLAY_INFO structure to be filled with display attributes.
+ * @param wsi The window system interface to query.
+ * @param window The handle of the window associated with the query.
+ * @return Zero if the display information was written to the info buffer, or non-zero if an error occurred.
+ */
+PAL_API(int)
+PAL_WindowSystemQueryWindowDisplay
+(
+    struct PAL_DISPLAY_INFO *info, 
+    struct PAL_WINDOW_SYSTEM *wsi, 
+    PAL_WINDOW             window
+);
+
+/* @summary Create an application window to display output and receive user input.
+ * @param state Pointer to a PAL_WINDOW_STATE structure to receive the window state.
+ * @param wsi The window system interface used to create the window.
+ * @param init Data used to specify window attributes and configure window creation.
+ * @return The window handle, or PAL_HANDLE_INVALID if the window could not be created.
+ */
+PAL_API(PAL_WINDOW)
+PAL_WindowCreate
+(
+    struct PAL_WINDOW_STATE *state, 
+    struct PAL_WINDOW_SYSTEM  *wsi, 
+    struct PAL_WINDOW_INIT   *init
+);
+
+/* @summary Destroy an application window.
+ * @param state Pointer to a PAL_WINDOW_STATE structure to receive the window state.
+ * @param wsi The window system interface used to create the window.
+ * @param window The handle of the window to destroy, returned by a prior call to PAL_WindowCreate.
+ */
+PAL_API(void)
+PAL_WindowDelete
+(
+    struct PAL_WINDOW_STATE *state, 
+    struct PAL_WINDOW_SYSTEM  *wsi, 
+    PAL_WINDOW              window
+);
+
+/* @summary Retrieve the most recent state data associated with an application window.
+ * This routine differs from PAL_WindowUpdateState in that it does not first process waiting messages.
+ * @param state Pointer to a PAL_WINDOW_STATE structure to receive the window state.
+ * @param wsi The window system interface used to create the window.
+ * @param window The handle of the window.
+ * @return Zero if the window state was updated, or non-zero if an error occurred.
+ */
+PAL_API(int)
+PAL_WindowQueryState
+(
+    struct PAL_WINDOW_STATE *state, 
+    struct PAL_WINDOW_SYSTEM  *wsi, 
+    PAL_WINDOW              window
+);
+
+/* @summary Process any waiting messages and then retrieve the state data for an application window.
+ * Window messages are generally processed during the window system update. This routine is intended to perform a "late latch" style update to reduce input latency.
+ * @param state Pointer to a PAL_WINDOW_STATE structure to receive the window state.
+ * @param wsi The window system interface used to create the window.
+ * @param window The handle of the window.
+ * @return Zero if the window state was updated, or non-zero if an error occurred.
+ */
+PAL_API(int)
+PAL_WindowUpdateState
+(
+    struct PAL_WINDOW_STATE *state, 
+    struct PAL_WINDOW_SYSTEM  *wsi, 
+    PAL_WINDOW              window
+);
+
+/* @summary Determine whether a window has been closed based on a state snapshot.
+ * @param state The window state snapshot.
+ * @return Non-zero if the window is closed, or zero if the window is not closed.
+ */
+PAL_API(int)
+PAL_WindowIsClosed
+(
+    struct PAL_WINDOW_STATE *state
+);
+
+/* @summary Determine whether a window is a fullscreen-style window based on a state snapshot.
+ * @param state The window state snapshot.
+ * @return Non-zero if the window is fullscreen, or zero if the window is not fullscreen.
+ */
+PAL_API(int)
+PAL_WindowIsFullscreen
+(
+    struct PAL_WINDOW_STATE *state
+);
+
 #ifdef __cplusplus
 }; /* extern "C" */
 #endif
@@ -210,20 +301,20 @@ PAL_WindowSystemQueryDisplayInfo
 /* @summary Include the appropriate platform-specific header.
  */
 #if   PAL_TARGET_PLATFORM == PAL_PLATFORM_WIN32 || PAL_TARGET_PLATFORM == PAL_PLATFORM_WINRT
-    #include "pal_win32_display.h"
+    #include "pal_win32_wsi.h"
 #elif PAL_TARGET_PLATFORM == PAL_PLATFORM_UWP
-    #include "pal_uwp_display.h"
+    #include "pal_uwp_wsi.h"
 #elif PAL_TARGET_PLATFORM == PAL_PLATFORM_XCB
-    #include "pal_xcb_display.h"
+    #include "pal_xcb_wsi.h"
 #elif PAL_TARGET_PLATFORM == PAL_PLATFORM_ANDROID
-    #include "pal_android_display.h"
+    #include "pal_android_wsi.h"
 #elif PAL_TARGET_PLATFORM == PAL_PLATFORM_IOS
-    #include "pal_ios_display.h"
+    #include "pal_ios_wsi.h"
 #elif PAL_TARGET_PLATFORM == PAL_PLATFORM_MACOS
-    #include "pal_macos_display.h"
+    #include "pal_macos_wsi.h"
 #else
-    #error    pal_display.h: No implementation of the abstraction layer for your platform.
+    #error    pal_wsi.h: No implementation of the abstraction layer for your platform.
 #endif
 
-#endif /* __PAL_DISPLAY_H__ */
+#endif /* __PAL_WSI_H__ */
 

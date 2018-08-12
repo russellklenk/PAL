@@ -2,11 +2,11 @@
  * @summary Define the platform-specific types and other internal bits for the
  * Microsoft Windows Desktop platform.
  */
-#ifndef __PAL_WIN32_DISPLAY_H__
-#define __PAL_WIN32_DISPLAY_H__
+#ifndef __PAL_WIN32_WSI_H__
+#define __PAL_WIN32_WSI_H__
 
-#ifndef __PAL_DISPLAY_H__
-#include "pal_display.h"
+#ifndef __PAL_WSI_H__
+#include "pal_wsi.h"
 #endif
 
 #ifndef PAL_NO_INCLUDES
@@ -33,6 +33,7 @@ typedef struct PAL_DISPLAY_DATA {
 /* @summary Define the internal data associated with a window. This is a superset of the data tracked with PAL_WINDOW_STATE.
  */
 typedef struct PAL_WINDOW_DATA {
+    struct PAL_WINDOW_SYSTEM          *WindowSystem;           /* A pointer back to the owning WSI_WINDOW_SYSTEM. */
     HWND                               OsWindowHandle;         /* The operating system window handle. */
     HINSTANCE                          OsModuleHandle;         /* The HINSTANCE of the application that created the window. */
     HMONITOR                           DisplayHandle;          /* The HMONITOR of the display that owns the window. */
@@ -78,5 +79,5 @@ typedef struct PAL_WINDOW_SYSTEM {
     PAL_HANDLE_TABLE                   WindowTable;            /* Table mapping PAL_WINDOW to PAL_WINDOW_DATA. */
 } PAL_WINDOW_SYSTEM;
 
-#endif /* __PAL_WIN32_DISPLAY_H__ */
+#endif /* __PAL_WIN32_WSI_H__ */
 
