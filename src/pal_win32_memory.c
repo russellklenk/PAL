@@ -4499,7 +4499,7 @@ PAL_HandleTableVisit
     {   /* load the commit status for the next 64 chunks.
          * if all bits are 0, then no chunks are committed.
          */
-        while ((commitw = commit[word++]) != 0)
+        while ((commitw = commit[word]) != 0)
         {
             do
             {   /* find the next set bit */
@@ -4518,6 +4518,7 @@ PAL_HandleTableVisit
                 /* n_remain is a count of committed chunks */
                 n_remain--;
             } while (commitw != 0);
+            word++;
         }
     }
     /* chunk_index, chunk_count and n_visit now specify a list of non-empty chunks.
