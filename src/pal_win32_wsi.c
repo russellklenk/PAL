@@ -523,6 +523,7 @@ PAL_DestroyWindowChunk
         if (DestroyWindow(hwnd) != FALSE) {
             while ((ret = GetMessage(&msg, hwnd, 0, 0)) != 0) {
                 if (ret == -1 || msg.message == WM_QUIT) {
+                    data->EventFlags |= PAL_WINDOW_EVENT_FLAG_DESTROYED;
                     break;
                 }
                 TranslateMessage(&msg);
@@ -731,7 +732,7 @@ PAL_WndProc_Notify
  * @return A message-specific value indicating that the message was processed.
  */
 static LRESULT
-PAL_WndProc_WM_CREATE
+PAL_WndProc_WSI_WM_CREATE
 (
     struct PAL_WINDOW_DATA *data, 
     HWND                    hwnd, 
@@ -800,7 +801,7 @@ PAL_WndProc_WM_CREATE
  * @return A message-specific value indicating that the message was processed.
  */
 static LRESULT
-PAL_WndProc_WM_ACTIVATE
+PAL_WndProc_WSI_WM_ACTIVATE
 (
     struct PAL_WINDOW_DATA *data, 
     HWND                    hwnd, 
@@ -836,7 +837,7 @@ PAL_WndProc_WM_ACTIVATE
  * @return A message-specific value indicating that the message was processed.
  */
 static LRESULT
-PAL_WndProc_WM_DPICHANGED
+PAL_WndProc_WSI_WM_DPICHANGED
 (
     struct PAL_WINDOW_DATA *data, 
     HWND                    hwnd, 
@@ -894,7 +895,7 @@ PAL_WndProc_WM_DPICHANGED
  * @return A message-specific value indicating that the message was processed.
  */
 static LRESULT
-PAL_WndProc_WM_CLOSE
+PAL_WndProc_WSI_WM_CLOSE
 (
     struct PAL_WINDOW_DATA *data, 
     HWND                    hwnd, 
@@ -919,7 +920,7 @@ PAL_WndProc_WM_CLOSE
  * @return A message-specific value indicating that the message was processed.
  */
 static LRESULT
-PAL_WndProc_WM_DESTROY
+PAL_WndProc_WSI_WM_DESTROY
 (
     struct PAL_WINDOW_DATA *data, 
     HWND                    hwnd, 
@@ -944,7 +945,7 @@ PAL_WndProc_WM_DESTROY
  * @return A message-specific value indicating that the message was processed.
  */
 static LRESULT
-PAL_WndProc_WM_MOVE
+PAL_WndProc_WSI_WM_MOVE
 (
     struct PAL_WINDOW_DATA *data, 
     HWND                    hwnd, 
@@ -988,7 +989,7 @@ PAL_WndProc_WM_MOVE
  * @return A message-specific value indicating that the message was processed.
  */
 static LRESULT
-PAL_WndProc_WM_SIZE
+PAL_WndProc_WSI_WM_SIZE
 (
     struct PAL_WINDOW_DATA *data, 
     HWND                    hwnd, 
@@ -1032,7 +1033,7 @@ PAL_WndProc_WM_SIZE
  * @return A message-specific value indicating that the message was processed.
  */
 static LRESULT
-PAL_WndProc_WM_SHOWWINDOW
+PAL_WndProc_WSI_WM_SHOWWINDOW
 (
     struct PAL_WINDOW_DATA *data, 
     HWND                    hwnd, 
@@ -1083,7 +1084,7 @@ PAL_WndProc_WM_SHOWWINDOW
  * @return A message-specific value indicating that the message was processed.
  */
 static LRESULT CALLBACK
-PAL_WndProc_WM_DISPLAYCHANGE
+PAL_WndProc_WSI_WM_DISPLAYCHANGE
 (
     struct PAL_WINDOW_DATA *data, 
     HWND                    hwnd, 
@@ -1124,7 +1125,7 @@ PAL_WndProc_WM_DISPLAYCHANGE
  * @return A message-specific value indicating that the message was processed.
  */
 static LRESULT
-PAL_WndProc_WM_SYSCOMMAND
+PAL_WndProc_WSI_WM_SYSCOMMAND
 (
     struct PAL_WINDOW_DATA *data, 
     HWND                    hwnd, 
@@ -1192,7 +1193,7 @@ PAL_WndProc_WM_SYSCOMMAND
  * @return A message-specific value indicating the result of processing the message.
  */
 static LRESULT CALLBACK
-PAL_WndProc
+PAL_WndProc_WSI
 (
     HWND     hwnd, 
     UINT      msg, 
@@ -1228,42 +1229,42 @@ PAL_WndProc
     {
         case WM_ACTIVATE:
             { /* the user is activating or deactivating the window */
-              result = PAL_WndProc_WM_ACTIVATE(data, hwnd, wparam, lparam);
+              result = PAL_WndProc_WSI_WM_ACTIVATE(data, hwnd, wparam, lparam);
             } break;
         case WM_CREATE:
             { /* retrieve the monitor DPI and size the window appropriately */
-              result = PAL_WndProc_WM_CREATE(data, hwnd, wparam, lparam);
+              result = PAL_WndProc_WSI_WM_CREATE(data, hwnd, wparam, lparam);
             } break;
         case WM_CLOSE:
             { /* mark the window as closed but do not destroy the window */
-              result = PAL_WndProc_WM_CLOSE(data, hwnd, wparam, lparam);
+              result = PAL_WndProc_WSI_WM_CLOSE(data, hwnd, wparam, lparam);
             } break;
         case WM_DESTROY:
             { /* post the WM_QUIT message that causes the main loop to terminate */
-              result = PAL_WndProc_WM_DESTROY(data, hwnd, wparam, lparam);
+              result = PAL_WndProc_WSI_WM_DESTROY(data, hwnd, wparam, lparam);
             } break;
         case WM_SHOWWINDOW:
             { /* the window is being shown or hidden */
-              result = PAL_WndProc_WM_SHOWWINDOW(data, hwnd, wparam, lparam);
+              result = PAL_WndProc_WSI_WM_SHOWWINDOW(data, hwnd, wparam, lparam);
             } break;
         case WM_WINDOWPOSCHANGING:
             { /* eat this message to prevent automatic resizing due to device loss */
             } break;
         case WM_MOVE:
             { /* the window has finished being moved */
-              result = PAL_WndProc_WM_MOVE(data, hwnd, wparam, lparam);
+              result = PAL_WndProc_WSI_WM_MOVE(data, hwnd, wparam, lparam);
             } break;
         case WM_SIZE:
             { /* the window has finished being sized */
-              result = PAL_WndProc_WM_SIZE(data, hwnd, wparam, lparam);
+              result = PAL_WndProc_WSI_WM_SIZE(data, hwnd, wparam, lparam);
             } break;
         case WM_DISPLAYCHANGE:
             { /* the display mode has been changed */
-              result = PAL_WndProc_WM_DISPLAYCHANGE(data, hwnd, wparam, lparam);
+              result = PAL_WndProc_WSI_WM_DISPLAYCHANGE(data, hwnd, wparam, lparam);
             } break;
         case WM_SYSCOMMAND:
             { /* handle Alt+Enter to toggle between fullscreen and windowed */
-              result = PAL_WndProc_WM_SYSCOMMAND(data, hwnd, wparam, lparam);
+              result = PAL_WndProc_WSI_WM_SYSCOMMAND(data, hwnd, wparam, lparam);
             } break;
         case WM_ERASEBKGND:
             { /* tell Windows we erased the background */
@@ -1275,7 +1276,7 @@ PAL_WndProc
             } break;
         case WM_DPICHANGED:
             { /* retrieve the updated DPI settings and size the window appropriately */
-              result = PAL_WndProc_WM_DPICHANGED(data, hwnd, wparam, lparam);
+              result = PAL_WndProc_WSI_WM_DPICHANGED(data, hwnd, wparam, lparam);
             } break;
         default:
             { /* pass the message to the default handler */
@@ -1555,32 +1556,201 @@ PAL_WindowSystemQueryWindowDisplay
     }
 }
 
-#if 0
 PAL_API(PAL_WINDOW)
 PAL_WindowCreate
 (
     struct PAL_WINDOW_STATE *state, 
     struct PAL_WINDOW_SYSTEM  *wsi, 
     struct PAL_WINDOW_INIT   *init
-);
-typedef struct PAL_WINDOW_INIT {
-    struct PAL_DISPLAY_INFO           *TargetDisplay;          /* The target display. If specified, window position and size are clamped to the display. */
-    pal_char_t const                  *WindowTitle;            /* A nul-terminated string specifying the window title. */
-    pal_uint32_t                       CreateFlags;            /* One or more bitwise-OR'd values of the PAL_WINDOW_CREATE_FLAGS enumeration. */
-    pal_uint32_t                       StyleFlags;             /* One or more bitwise-OR'd values of the PAL_WINDOW_STYLE enumeration. */
-    pal_sint32_t                       PositionX;              /* The x-coordinate of the upper-left corner of the window in virtual display space. If zero, and a target display is specified, this value is taken from the target display. */
-    pal_sint32_t                       PositionY;              /* The y-coordinate of the upper-left corner of the window in virtual display space. If zero, and a target display is specified, this value is taken from the target display. */
-    pal_uint32_t                       SizeX;                  /* The horizontal dimension of the window client area in logical pixels. If zero, and a target display is specified, this value is taken from the target display. */
-    pal_uint32_t                       SizeY;                  /* The vertical dimension of the window client area in logical pixels. If zero, and a target display is specified, this value is taken from the target display. */
-} PAL_WINDOW_INIT;
+)
+{
+    HINSTANCE         module =(HINSTANCE) GetModuleHandle(NULL);
+    HMONITOR         monitor = NULL;
+    HWND                hwnd = NULL;
+    WCHAR const  *class_name =L"PAL_WSI_WndClass";
+    pal_sint32_t   virtual_x = init->PositionX;
+    pal_sint32_t   virtual_y = init->PositionY;
+    pal_uint32_t    dim_x_px = init->SizeX;
+    pal_uint32_t    dim_y_px = init->SizeY;
+    pal_uint32_t style_flags = init->StyleFlags;
+    DWORD         error_code = ERROR_SUCCESS;
+    DWORD           style_ex = 0;
+    DWORD              style = 0;
+    MONITORINFO      moninfo;
+    WNDCLASSEX      wndclass;
+    POINT                 pt;
+    RECT                  rc;
+    PAL_WINDOW_OBJECT    obj;
+
+    if ((init->CreateFlags & PAL_WINDOW_CREATE_FLAG_USE_DISPLAY) && init->TargetDisplay == NULL) {
+        assert(init->TargetDisplay != NULL);
+        return PAL_HANDLE_INVALID;
+    }
+
+    /* register the window class if necessary */
+    if (!GetClassInfoEx(module, class_name, &wndclass)) {
+        wndclass.cbSize         = sizeof(WNDCLASSEX);
+        wndclass.cbClsExtra     = 0;
+        wndclass.cbWndExtra     = sizeof(PAL_WINDOW_DATA*);
+        wndclass.hInstance      = module;
+        wndclass.lpszClassName  = class_name;
+        wndclass.lpszMenuName   = NULL;
+        wndclass.lpfnWndProc    = PAL_WndProc_WSI;
+        wndclass.hIcon          = LoadIcon  (0, IDI_APPLICATION);
+        wndclass.hIconSm        = LoadIcon  (0, IDI_APPLICATION);
+        wndclass.hCursor        = LoadCursor(0, IDC_ARROW);
+        wndclass.style          = CS_OWNDC | CS_HREDRAW | CS_VREDRAW;
+        wndclass.hbrBackground  = NULL;
+        if (!RegisterClassEx(&wndclass)) {
+            error_code = GetLastError();
+            return PAL_HANDLE_INVALID;
+        }
+    }
+
+    /* figure out the display this window will be placed on */
+    if (init->CreateFlags & PAL_WINDOW_CREATE_FLAG_USE_DISPLAY) {
+        /* the supplied position indicates a relative position */
+        monitor =(HMONITOR) init->TargetDisplay->DeviceId;
+    } else {
+        /* the supplied position indicates an absolute position */
+        pt.x    = init->PositionX;
+        pt.y    = init->PositionY;
+        monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    }
+    moninfo.cbSize = sizeof(MONITORINFO);
+    GetMonitorInfo(monitor, &moninfo);
+
+    /* validate and adjust style flags */
+    if (style_flags == PAL_WINDOW_STYLE_FLAGS_NONE) {
+        style_flags  = PAL_WINDOW_STYLE_FLAG_FULLSCREEN;
+    }
+    /* fullscreen windows do not have chrome and are not resizable */
+    if (style_flags &  PAL_WINDOW_STYLE_FLAG_FULLSCREEN) {
+        style_flags &=~PAL_WINDOW_STYLE_FLAG_CENTER;
+        style_flags &=~PAL_WINDOW_STYLE_FLAG_CHROME;
+        style_flags &=~PAL_WINDOW_STYLE_FLAG_RESIZABLE;
+        virtual_x    =(pal_sint32_t) moninfo.rcMonitor.left;
+        virtual_y    =(pal_sint32_t) moninfo.rcMonitor.top;
+        dim_x_px     =(pal_uint32_t)(moninfo.rcMonitor.right - moninfo.rcMonitor.left);
+        dim_y_px     =(pal_uint32_t)(moninfo.rcMonitor.bottom - moninfo.rcMonitor.top);
+        rc = moninfo.rcMonitor;
+    } else {
+        rc = moninfo.rcWork;
+    }
+
+    /* adjust position and size to fit */
+    if (dim_x_px == 0) {
+        dim_x_px  =(rc.right - rc.left);
+    }
+    if (dim_y_px == 0) {
+        dim_y_px  =(rc.bottom - rc.top);
+    }
+    if (style_flags & PAL_WINDOW_STYLE_FLAG_CENTER) {
+        virtual_x = rc.left + (rc.right  - rc.left - dim_x_px) / 2;
+        virtual_y = rc.top  + (rc.bottom - rc.top  - dim_y_px) / 2;
+    }
+    if ((virtual_x + dim_x_px) > ((pal_uint32_t)(rc.right - rc.left))) {
+        dim_x_px =  (rc.right - rc.left) - virtual_x;
+    }
+    if ((virtual_y + dim_y_px) > ((pal_uint32_t)(rc.bottom - rc.top))) {
+        dim_y_px =  (rc.bottom - rc.top) - virtual_y;
+    }
+
+    /* figure out the Win32 style flags */
+    if (style_flags & PAL_WINDOW_STYLE_FLAG_CHROME) {
+        /* create a resizable window with the normal chrome */
+        style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
+        if ((style_flags & PAL_WINDOW_STYLE_FLAG_RESIZABLE) == 0) {
+            style &= ~WS_THICKFRAME;
+        }
+    } else {
+        /* create a borderless window */
+        style = WS_POPUP;
+    }
+
+    /* acquire the window object */
+    if (PAL_WindowObjectCreate(&obj, wsi) != 0) {
+        return PAL_HANDLE_INVALID;
+    }
+    obj.WindowData->OsWindowHandle      = NULL;
+    obj.WindowData->OsModuleHandle      = module;
+    obj.WindowData->DisplayHandle       = monitor;
+    obj.WindowData->DisplayPositionX    =(pal_sint32_t) moninfo.rcMonitor.left;
+    obj.WindowData->DisplayPositionY    =(pal_sint32_t) moninfo.rcMonitor.top;
+    obj.WindowData->DisplaySizeX        =(pal_uint32_t)(moninfo.rcMonitor.right - moninfo.rcMonitor.left);
+    obj.WindowData->DisplaySizeY        =(pal_uint32_t)(moninfo.rcMonitor.bottom - moninfo.rcMonitor.top);
+    obj.WindowData->WindowPositionX     = virtual_x;
+    obj.WindowData->WindowPositionY     = virtual_y;
+    obj.WindowData->WindowSizeLogicalX  = dim_x_px;
+    obj.WindowData->WindowSizeLogicalY  = dim_y_px;
+    obj.WindowData->WindowSizePhysicalX = dim_x_px;
+    obj.WindowData->WindowSizePhysicalY = dim_y_px;
+    obj.WindowData->ClientSizeLogicalX  = dim_x_px;
+    obj.WindowData->ClientSizeLogicalY  = dim_y_px;
+    obj.WindowData->ClientSizePhysicalX = dim_x_px;
+    obj.WindowData->ClientSizePhysicalY = dim_y_px;
+    obj.WindowData->RestorePositionX    = virtual_x;
+    obj.WindowData->RestorePositionY    = virtual_y; 
+    obj.WindowData->RestoreSizeX        = dim_x_px;
+    obj.WindowData->RestoreSizeY        = dim_y_px;
+    obj.WindowData->RestoreStyle        = style;
+    obj.WindowData->RestoreStyleEx      = style_ex;
+    obj.WindowData->DisplayDpiX         = USER_DEFAULT_SCREEN_DPI;
+    obj.WindowData->DisplayDpiY         = USER_DEFAULT_SCREEN_DPI;
+    obj.WindowData->EventFlags          = PAL_WINDOW_EVENT_FLAGS_NONE;
+    obj.WindowData->EventCount          = 0;
+    obj.WindowData->StatusFlags         = PAL_WINDOW_STATUS_FLAGS_NONE;
+    obj.WindowData->CreateFlags         = style_flags;
+
+    /* create the window */
+    if ((hwnd = CreateWindowEx(style_ex, class_name, init->WindowTitle, style, virtual_x, virtual_y, dim_x_px, dim_y_px, NULL, NULL, module, obj.WindowData)) == NULL) {
+        PAL_WindowObjectDelete(wsi, obj.Handle);
+        return PAL_HANDLE_INVALID;
+    }
+    ShowWindow(hwnd, SW_SHOW);
+    if (state) {
+        PAL_CopyWindowDataToWindowState(state, obj.WindowData);
+        state->EventCount = 1;
+    }
+    return obj.Handle;
+}
 
 PAL_API(void)
 PAL_WindowDelete
 (
     struct PAL_WINDOW_STATE *state, 
-    struct PAL_WINDOW_SYSTEM  *wsi, 
+    struct PAL_WINDOW_SYSTEM  *wsi,
     PAL_WINDOW              window
-);
+)
+{
+    PAL_WINDOW_OBJECT obj;
+    if (PAL_WindowObjectResolve(&obj, wsi, window) == 0) {
+        PAL_WINDOW_DATA  *data = obj.WindowData;
+        HWND              hwnd = obj.WindowData->OsWindowHandle;
+        UINT               nev = 0;
+        BOOL               ret;
+        MSG                msg;
+
+        /* if necessary, destroy the window and wait */
+        data->EventFlags = PAL_WINDOW_EVENT_FLAGS_NONE;
+        if (DestroyWindow(hwnd) != FALSE) {
+            while ((ret  = GetMessage(&msg, hwnd, 0, 0)) != 0) {
+                if (ret == -1 || msg.message == WM_QUIT) {
+                    break;
+                }
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
+                nev++;
+            }
+        }
+        if (state != NULL) {
+            PAL_CopyWindowDataToWindowState(state, data);
+            state->EventFlags |= PAL_WINDOW_EVENT_FLAG_DESTROYED;
+            state->EventCount  = nev;
+        }
+        PAL_WindowObjectDelete(wsi, window);
+    }
+}
 
 PAL_API(int)
 PAL_WindowQueryState
@@ -1588,7 +1758,15 @@ PAL_WindowQueryState
     struct PAL_WINDOW_STATE *state, 
     struct PAL_WINDOW_SYSTEM  *wsi, 
     PAL_WINDOW              window
-);
+)
+{
+    PAL_WINDOW_OBJECT obj;
+    if (PAL_WindowObjectResolve(&obj, wsi, window) == 0) {
+        PAL_CopyWindowDataToWindowState(state, obj.WindowData);
+        return 0;
+    }
+    return -1;
+}
 
 PAL_API(int)
 PAL_WindowUpdateState
@@ -1596,18 +1774,49 @@ PAL_WindowUpdateState
     struct PAL_WINDOW_STATE *state, 
     struct PAL_WINDOW_SYSTEM  *wsi, 
     PAL_WINDOW              window
-);
+)
+{
+    PAL_WINDOW_OBJECT obj;
+    if (PAL_WindowObjectResolve(&obj, wsi, window) == 0) {
+        PAL_WINDOW_DATA  *data = obj.WindowData;
+        HWND              hwnd = obj.WindowData->OsWindowHandle;
+        UINT               nev = 0;
+        BOOL               ret;
+        MSG                msg;
+
+        /* process any queued window messages */
+        while ((ret  = GetMessage(&msg, hwnd, 0, 0)) != 0) {
+            if (ret == -1 || msg.message == WM_QUIT) {
+                data->EventFlags |= PAL_WINDOW_EVENT_FLAG_DESTROYED;
+                break;
+            }
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+            nev++;
+        }
+        /* return the updated state to the caller */
+        PAL_CopyWindowDataToWindowState(state, data);
+        state->EventCount = nev;
+        return 0;
+    }
+    return -1;
+}
 
 PAL_API(int)
 PAL_WindowIsClosed
 (
     struct PAL_WINDOW_STATE *state
-);
+)
+{
+    return (state->StatusFlags & PAL_WINDOW_STATUS_FLAG_CLOSED) != 0;
+}
 
 PAL_API(int)
 PAL_WindowIsFullscreen
 (
     struct PAL_WINDOW_STATE *state
-);
-#endif
+)
+{
+    return (state->StatusFlags & PAL_WINDOW_STATUS_FLAG_FULLSCREEN) != 0;
+}
 
