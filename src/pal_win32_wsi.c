@@ -1160,8 +1160,10 @@ PAL_WndProc_WSI_WM_SYSCOMMAND
 
                 /* switch the window style to a fullscreen style */
                 rc = moninfo.rcMonitor;
-                SetWindowLong(hwnd, GWL_STYLE, WS_POPUP);
-                SetWindowPos (hwnd, HWND_TOP , rc.left, rc.top, rc.right-rc.left, rc.bottom-rc.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+                SetWindowLong (hwnd, GWL_STYLE, WS_POPUP);
+                SetWindowPos  (hwnd, HWND_TOP , rc.left, rc.top, rc.right-rc.left, rc.bottom-rc.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+                ShowWindow    (hwnd, SW_SHOW);
+                InvalidateRect(hwnd, NULL, TRUE);
                 
                 /* note that the window is now in fullscreen mode */
                 data->StatusFlags &=~PAL_WINDOW_STATUS_FLAG_WINDOWED;
@@ -1268,6 +1270,11 @@ PAL_WndProc_WSI
             } break;
         case WM_ERASEBKGND:
             { /* tell Windows we erased the background */
+#if 0
+              HDC dc =(HDC) wparam;
+              RECT r; GetClientRect(hwnd, &r);
+              FillRect(dc, &r, GetStockObject(BLACK_BRUSH));
+#endif
               result = 1;
             } break;
         case WM_PAINT:
