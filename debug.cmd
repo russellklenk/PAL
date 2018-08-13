@@ -15,13 +15,14 @@ IF /I "%1" == "test_htable" SET TARGET_OUTPUT=test_htable.exe
 IF /I "%1" == "test_lockfree" SET TARGET_OUTPUT=test_lockfree.exe
 IF /I "%1" == "test_task" SET TARGET_OUTPUT=test_task.exe
 IF /I "%1" == "test_string" SET TARGET_OUTPUT=test_string.exe
+IF /I "%1" == "test_display" SET TARGET_OUTPUT=test_display.exe
 SHIFT
 GOTO Process_Argument
 
 :: Default any unspecified command-line arguments.
 :Default_Arguments
 IF [%TARGET_OUTPUT%] EQU [] (
-    ECHO No target specified; expected "test_hello", "test_htable", "test_lockfree" or "test_task". Debugging "test_task".
+    ECHO No target specified; expected "test_hello", "test_htable", "test_lockfree", "test_task" or "test_display". Debugging "test_task".
     SET TARGET_OUTPUT=test_task.exe
 )
 IF NOT EXIST "%OUTPUTDIR%" (
