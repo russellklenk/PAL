@@ -15,7 +15,7 @@ IF /I "%1" == "test_htable" SET TARGET_OUTPUT=test_htable.exe
 IF /I "%1" == "test_lockfree" SET TARGET_OUTPUT=test_lockfree.exe
 IF /I "%1" == "test_task" SET TARGET_OUTPUT=test_task.exe
 IF /I "%1" == "test_string" SET TARGET_OUTPUT=test_string.exe
-IF /I "%1" == "test_display" SET TARGET_OUTPUT=test_display.exe
+IF /I "%1" == "test_wsi" SET TARGET_OUTPUT=test_wsi.exe
 SHIFT
 GOTO Process_Argument
 
