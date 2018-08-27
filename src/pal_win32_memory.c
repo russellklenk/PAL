@@ -3023,6 +3023,55 @@ PAL_MemoryArenaMark
     return m;
 }
 
+PAL_API(pal_uint8_t*)
+PAL_MemoryArenaMarkerToHostAddress
+(
+    struct PAL_MEMORY_ARENA_MARKER marker
+)
+{
+    if (marker.Arena != NULL && marker.Arena->AllocatorType == PAL_MEMORY_ALLOCATOR_TYPE_HOST) {
+        return ((pal_uint8_t *) marker.Arena->MemoryStart) + marker.Offset;
+    } else {
+        assert(marker.Arena != NULL);
+        assert(marker.Arena->AllocatorType == PAL_MEMORY_ALLOCATOR_TYPE_HOST);
+        return NULL;
+    }
+}
+
+PAL_API(pal_uint64_t)
+PAL_MemoryArenaMarkerDifference
+(
+    struct PAL_MEMORY_ARENA_MARKER marker1, 
+    struct PAL_MEMORY_ARENA_MARKER marker2
+)
+{
+    assert(marker1.Arena != NULL);
+    assert(marker2.Arena != NULL);
+    assert(marker1.Arena == marker2.Arena);
+    if (marker1.Offset < marker2.Offset) {
+        return marker2.Offset - marker1.Offset;
+    } else {
+        return marker1.Offset - marker2.Offset;
+    }
+}
+
+PAL_API(pal_uint32_t)
+PAL_MemoryArenaMarkerDifference32
+(
+    struct PAL_MEMORY_ARENA_MARKER marker1, 
+    struct PAL_MEMORY_ARENA_MARKER marker2
+)
+{
+    assert(marker1.Arena != NULL);
+    assert(marker2.Arena != NULL);
+    assert(marker1.Arena == marker2.Arena);
+    if (marker1.Offset < marker2.Offset) {
+        return (pal_uint32_t) (marker2.Offset - marker1.Offset);
+    } else {
+        return (pal_uint32_t) (marker1.Offset - marker2.Offset);
+    }
+}
+
 PAL_API(void)
 PAL_MemoryArenaResetToMarker
 (

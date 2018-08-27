@@ -1500,6 +1500,43 @@ PAL_MemoryArenaMark
     struct PAL_MEMORY_ARENA *arena
 );
 
+/* @summary Resolve a memory arena marker to a host-visible memory address.
+ * The source memory arena must be of type PAL_MEMORY_ALLOCATOR_TYPE_HOST.
+ * @param marker The arena marker to resolve.
+ * @return The host memory address corresponding to the marker, or NULL.
+ */
+PAL_API(pal_uint8_t*)
+PAL_MemoryArenaMarkerToHostAddress
+(
+    struct PAL_MEMORY_ARENA_MARKER marker
+);
+
+/* @summary Calculate the number of bytes between two memory arena markers.
+ * The two markers must have been captured from the same arena.
+ * @param marker1 A marker captured by a prior call to PAL_MemoryArenaMark.
+ * @param marker2 A marker captured by a prior call to PAL_MemoryArenaMark.
+ * @return The number of bytes between marker1 and marker2.
+ */
+PAL_API(pal_uint64_t)
+PAL_MemoryArenaMarkerDifference
+(
+    struct PAL_MEMORY_ARENA_MARKER marker1, 
+    struct PAL_MEMORY_ARENA_MARKER marker2
+);
+
+/* @summary Calculate the number of bytes between two memory arena markers.
+ * The two markers must have been captured from the same arena. The difference must be less than 4GB.
+ * @param marker1 A marker captured by a prior call to PAL_MemoryArenaMark.
+ * @param marker2 A marker captured by a prior call to PAL_MemoryArenaMark.
+ * @return The number of bytes between marker1 and marker2.
+ */
+PAL_API(pal_uint32_t)
+PAL_MemoryArenaMarkerDifference32
+(
+    struct PAL_MEMORY_ARENA_MARKER marker1, 
+    struct PAL_MEMORY_ARENA_MARKER marker2
+);
+
 /* @summary Roll back a memory arena allocator to a given point in time.
  * @param arena The memory arena allocator to roll back.
  * @param marker A marker obtained by a prior call to the ArenaMark function, or 0 to invalidate all existing allocations made from the arena.
