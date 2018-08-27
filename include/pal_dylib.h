@@ -9,6 +9,46 @@
 #include "pal.h"
 #endif
 
+/* @summary Helper macro for populating a dispatch table with functions loaded at runtime.
+ * If the function is not found, the entry point is updated to point to a stub implementation provided by the caller.
+ * This macro relies on specific naming conventions:
+ * - The signature must be BlahBlahBlah_Func where BlahBlahBlah corresponds to the _func argument.
+ * - The dispatch table field must be BlahBlahBlah where BlahBlahBlah corresponds to the _func argument.
+ * - The stub function must be named BlahBlahBlah_Stub where BlahBlahBlah corresponds to the _func argument.
+ * @param _disp A pointer to the dispatch table to populate.
+ * @param _module A pointer to the PAL_MODULE representing the module loaded into the process address space.
+ * @param _func The name of the function to dynamically load.
+ */
+#ifndef PAL_RuntimeFunctionResolve
+#define PAL_RuntimeFunctionResolve(_disp, _module, _func)                       \
+    for (;;) {                                                                  \
+        (_disp)->_func=(_func##_Func)PAL_ModuleResolveSymbol((_module), #_func);\
+        if ((_disp)->_func == NULL) {                                           \
+            (_disp)->_func  = _func##_Stub;                                     \
+        }                                                                       \
+        break;                                                                  \
+    }
+#endif
+
+/* @summary Set a runtime-resolved function entry point to point at the stub implementation provided by the application.
+ * @param _disp A pointer to the dispatch table to populate.
+ * @param _func The name of the function to dynamically load.
+ */
+#ifndef PAL_RuntimeFunctionSetStub
+#define PAL_RuntimeFunctionSetStub(_disp, _func)                               \
+    (_disp)->_func=(_func##_Func) _func##_Stub
+#endif
+
+/* @summary Determine whether a runtime-resolved function was resolved to its stub implementation, meaning that it is not implemented on the host.
+ * @param _disp A pointer to the dispatch table.
+ * @param _func The name of the function to check.
+ * @return Non-zero if the dispatch table entry for _func points to the stub implementation.
+ */
+#ifndef PAL_RuntimeFunctionIsMissing
+#define PAL_RuntimeFunctionIsMissing(_disp, _func)                             \
+    (_disp)->_func == _func##_Stub
+#endif
+
 /* @summary Forward-declare the types exported by this module.
  * The type definitions are included in the platform-specific header.
  */
