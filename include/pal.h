@@ -9,7 +9,9 @@
 #ifndef PAL_NO_INCLUDES
 #include <assert.h>
 #include <stddef.h>
+#if defined(_MSC_VER) && (_MSC_VER > 1800)
 #include <uchar.h>
+#endif
 #endif
 
 /* @summary If __STDC_UTF_16__ is defined (in uchar.h) then use existing 

@@ -1195,8 +1195,8 @@ PAL_CpuWorkerThreadMain
     }
     __finally {
         PAL_TaskSchedulerReleaseTaskPool(scheduler, thread_pool);
-        return exit_code;
     }
+    return exit_code;
 }
 
 /* @summary Implement the entry point for a worker thread that processes blocking or asynchronous I/O work.
@@ -1271,8 +1271,8 @@ PAL_AioWorkerThreadMain
     }
     __finally {
         PAL_TaskSchedulerReleaseTaskPool(scheduler, thread_pool);
-        return exit_code;
     }
+    return exit_code;
 }
 
 /* @summary Notify all worker threads that they should exit and wait. All thread handles are closed.

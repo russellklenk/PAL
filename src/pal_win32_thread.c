@@ -209,8 +209,8 @@ PAL_ThreadPoolThreadEntry
         }
     } __finally {
         /* TODO: cleanup */
-        return exit_code;
     }
+    return exit_code;
 }
 
 /* @summary Determine the amount of memory required to initialize a thread pool.

@@ -13,13 +13,21 @@ SET DISTDIR=%~dp0dist
 SET VSVERSION_2013=12.0
 SET VSVERSION_2015=14.0
 SET VSVERSION_2017=2017\Professional
-SET VSVERSION=%VSVERSION_2017%
+SET VSVERSION=%VSVERSION_2013%
 
 :: Specify the path to the Visual C++ toolset environment setup script.
 IF %VSVERSION% EQU %VSVERSION_2017% (
     SET VSTOOLSETUP="C:\Program Files (x86)\Microsoft Visual Studio\%VSVERSION_2017%\VC\Auxiliary\Build\vcvarsall.bat"
 ) ELSE (
     SET VSTOOLSETUP="C:\Program Files (x86)\Microsoft Visual Studio %VSVERSION%\VC\vcvarsall.bat"
+)
+
+:: VS2013 wants the platform name to be 'amd64' instead of 'x64'.
+:: Also, VS2013 does not support specifying the Windows SDK to use.
+IF %VSVERSION% EQU %VSVERSION_2013% (
+    SET VSPLATFORM=amd64
+) ELSE (
+    SET VSPLATFORM=x64 %WINSDK%
 )
 
 :: Specify the Windows and Windows SDK version.
@@ -39,12 +47,13 @@ SET WINVER=%WINVER_WIN7%
 SET WINSDK=%WINSDK_WIN81%
 
 :Setup_VCTools_x64
-CALL %VSTOOLSETUP% x64 %WINSDK%
+CALL %VSTOOLSETUP% %VSPLATFORM%
 IF %ERRORLEVEL% NEQ 0 (
     ECHO ERROR: The file vcvarsall.bat was not found or returned an error.
     ECHO   Make sure that the Microsoft Visual C++ compiler is installed.
     ECHO   Make sure that the VSVERSION and WINSDK variables in setenv.cmd are correct.
     ECHO   VSVERSION=%VSVERSION%
+    ECHO   VSPLATFORM=%VSPLATFORM%
     ECHO   WINVER=%WINVER%
     ECHO   WINSDK=%WINSDK%
     ECHO.

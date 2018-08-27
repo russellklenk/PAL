@@ -35,12 +35,12 @@ PAL_ModuleIsValid
     return (module->Handle != NULL) ? 1 : 0;
 }
 
-PAL_API(void*)
+PAL_API(PAL_Func)
 PAL_ModuleResolveSymbol
 (
     struct PAL_MODULE *module, 
     char const        *symbol
 )
 {
-    return (void*) GetProcAddress(module->Handle, symbol);
+    return (PAL_Func) GetProcAddress(module->Handle, symbol);
 }

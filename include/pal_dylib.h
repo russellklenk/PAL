@@ -49,6 +49,11 @@
     (_disp)->_func == _func##_Stub
 #endif
 
+/* @summary Define a general signature for a dynamically loaded function. 
+ * Code will have to case the function pointer to the specific type.
+ */
+typedef int (*PAL_Func)(void);
+
 /* @summary Forward-declare the types exported by this module.
  * The type definitions are included in the platform-specific header.
  */
@@ -94,7 +99,7 @@ PAL_ModuleIsValid
  * @param symbol A nul-terminated ANSI string specifying the mangled name of the exported symbol.
  * @return The address of the symbol within the process address space, or NULL if no symbol with the specified name was found.
  */
-PAL_API(void*)
+PAL_API(PAL_Func)
 PAL_ModuleResolveSymbol
 (
     struct PAL_MODULE *module, 
