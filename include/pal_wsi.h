@@ -20,8 +20,9 @@ struct  PAL_WINDOW_SYSTEM;
 struct  PAL_DISPLAY_INFO;
 struct  PAL_DISPLAY_STATE;
 
-/* @summary Objects in the display system are opaque 32-bit handles.
+/* @summary Objects in the window system interface are opaque 32-bit handles.
  */
+typedef PAL_HANDLE PAL_INPUT;
 typedef PAL_HANDLE PAL_WINDOW;
 
 /* @summary Define the information returned about a display attached to the system.
@@ -157,6 +158,30 @@ PAL_API(void)
 PAL_WindowSystemDelete
 (
     struct PAL_WINDOW_SYSTEM *wsi
+);
+
+/* @summary Create an object representing the state of input devices attached to the system.
+ * The PAL_INPUT handle can be supplied to functions that might update the state of the input devices.
+ * Calls to this function must be externally synchronized.
+ * @param wsi The window system interface from which the input object will be allocated.
+ * @return The handle of the input snapshot, or PAL_HANDLE_INVALID.
+ */
+PAL_API(PAL_INPUT)
+PAL_InputCreate
+(
+    struct PAL_WINDOW_SYSTEM *wsi
+);
+
+/* @summary Delete an object representing the state of input devices attached to the system.
+ * Calls to this function must be externally synchronized.
+ * @param wsi The window system interface from which the input object was allocated.
+ * @param input The handle of the input object to delete.
+ */
+PAL_API(void)
+PAL_InputDelete
+(
+    struct PAL_WINDOW_SYSTEM *wsi, 
+    PAL_INPUT               input
 );
 
 /* @summary Process pending window system events for all windows.

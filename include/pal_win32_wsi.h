@@ -65,19 +65,5 @@ typedef struct PAL_WINDOW_DATA {
     pal_uint32_t                       CreateFlags;            /* The flag values used when the window was created. */
 } PAL_WINDOW_DATA;
 
-/* @summary Define the data associated with the host operating system window manager.
- */
-typedef struct PAL_WINDOW_SYSTEM {
-    HWND                               NotifyWindow;           /* An invisible window used for receiving system and device change notifications. */
-    HDEVNOTIFY                         DeviceNotify;           /* The device notification handle used to receive notification about display and GPU attach/removal. */
-    HMODULE                            ShcoreDll;              /* The module handle for Shcore.dll, or NULL if the DLL is not present on the host system. */
-    PAL_DISPLAY_DATA                  *ActiveDisplays;         /* An array of DisplayCount items specifying information about active displays. */
-    pal_uint32_t                       DisplayCount;           /* The number of displays attached to the system (as of the most recent update). */
-    pal_uint32_t                       DisplayCapacity;        /* The maximum number of displays for which information can be stored. */
-    pal_uint32_t                       DisplayEventFlags;      /* One or more bitwise OR'd PAL_DISPLAY_EVENT_FLAGS indicating changes that have occurred since the previous update. */
-    PAL_DISPLAY_INFO                   PrimaryDisplay;         /* Information about the primary display output. */
-    PAL_HANDLE_TABLE                   WindowTable;            /* Table mapping PAL_WINDOW to PAL_WINDOW_DATA. */
-} PAL_WINDOW_SYSTEM;
-
 #endif /* __PAL_WIN32_WSI_H__ */
 

@@ -5,6 +5,7 @@
 #include "pal_wsi.h"
 
 #include "pal_win32_memory.c"
+#include "pal_win32_dylib.c"
 #include "pal_win32_time.c"
 #include "pal_win32_wsi.c"
 

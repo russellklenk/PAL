@@ -1,8 +1,39 @@
 /**
  * @summary Implement the PAL Window System Interface APIs for the Win32 desktop platform.
  */
-#include <initguid.h>
+#include "pal_win32_dylib.h"
+#include "pal_win32_time.h"
 #include "pal_win32_wsi.h"
+
+#include <initguid.h>
+#include <XInput.h>
+
+/* @@@ NOTES:
+ * Here's what you were thinking when you had to stop working on this module.
+ * Each application tick would use PAL_InputCreate to allocate one or two PAL_INPUT objects.
+ * The first PAL_INPUT would be used to gather events during the primary PAL_WindowSystemUpdate.
+ * The second PAL_INPUT would be used to gather events during the late latch PAL_WindowSystemUpdate.
+ * Calls to PAL_WindowSystemUpdate take a PAL_INPUT handle.
+ * They acquire an exclusive lock for updating the input state.
+ * Collisions should generally not happen ever; if they do happen, it will be during the late-latch update.
+ * They copy the LatestState into the 'old' buffer of the PAL_WSI_INPUT_DATA.
+ * They then process events for the notify window, which updates the LatestState buffer.
+ * They copy the LatestState into the 'new' buffer of the PAL_WSI_INPUT_DATA.
+ * The user code can then generate a PAL_INPUT_EVENTS for the PAL_INPUT (primary).
+ * For the late latch, the same process is performed, except the late-latch PAL_INPUT is supplied. (needed???)
+ * The user code can then generate a PAL_INPUT_EVENTS for the PAL_INPUT (late latch).
+ * The user code can then merge the two PAL_INPUT_EVENTS if they need to - but I don't think they will.
+ *
+ * The memory layout for a PAL_WSI_INPUT_DEVICE_LIST is somewhat involved.
+ * We want a single contiguous buffer that looks like this:
+ * [PAL_WSI_INPUT_DEVICE_LIST] - struct instance at start of allocation.
+ * [DeviceHandles array] - StateBase points to the start of this array.
+ * [DeviceState array] - must be computed manually. beware of alignment.
+ * Since the size varies for each type of device, the sizes and counts are computed once and stored.
+ * The stored size does not include the size of the PAL_WSI_INPUT_DEVICE_LIST.
+ * This is ideal because we can PAL_ZeroMemory(devices->StateBase, wsi->XXXXStateSize) 
+ * and PAL_CopyMemory(devices->StateBase, ...);
+ */
 
 /* @summary WM_DPICHANGED is defined for Windows 8.1 and later only.
  */
@@ -16,12 +47,73 @@
 #   define WS_EX_NOREDIRECTIONBITMAP     0x00200000L
 #endif
 
+/* @summary Specify the maximum number of input devices of each type that can be attached to the system.
+ */
+#ifndef PAL_WSI_MAX_INPUT_DEVICES
+#   define PAL_WSI_MAX_INPUT_DEVICES     8
+#endif
+
+/* @summary Specify the maximum number of keys that can be reported as down, pressed or released in a single update.
+ */
+#ifndef PAL_WSI_MAX_KEYS
+#   define PAL_WSI_MAX_KEYS              256
+#endif
+
+/* @summary Define the maximum number of buttons that can be reported as down, pressed or released in a single update.
+ */
+#ifndef PAL_WSI_MAX_BUTTONS
+#   define PAL_WSI_MAX_BUTTONS           32
+#endif
+
 /* @summary Define stream indices for the handle tables used by this module.
  */
 #ifndef PAL_WINDOW_SYSTEM_STREAMS
 #   define PAL_WINDOW_SYSTEM_STREAMS
 /** PAL_WINDOW_SYSTEM::WindowTable **/
 #   define PAL_WSS_WINDOW_DATA           0
+/** PAL_WINDOW_SYSTEM::InputTable **/
+#   define PAL_WSI_INPUT_DATA            0
+#endif
+
+/* @summary Helper macro to retrieve a pointer to the start of a device state structure.
+ * @param _list A pointer to a PAL_WSI_INPUT_DEVICE_LIST.
+ * @param _index The zero-based index of the device record to retrieve.
+ * @param _size The size of a device record, in bytes.
+ * @return A pointer to the start of the device record.
+ */
+#ifndef PAL_InputDeviceListState
+#define PAL_InputDeviceListState(_list, _index, _size)                         \
+    (((_list)->DeviceState) + ((_index) * (_size)))
+#endif
+
+/* @summary Retrieve a gamepad device state from a device list.
+ * @param _list A pointer to a PAL_WSI_INPUT_DEVICE_LIST for gamepad devices.
+ * @param _index The zero-based index of the device state record to retrieve.
+ * @return A pointer to the PAL_WSI_GAMEPAD_STATE representing the state of the device.
+ */
+#ifndef PAL_GamepadDeviceState
+#define PAL_GamepadDeviceState(_list, _index)                                  \
+    ((PAL_WSI_GAMEPAD_STATE*) PAL_InputDeviceListState(_list, _index, sizeof(PAL_WSI_GAMEPAD_STATE)))
+#endif
+
+/* @summary Retrieve a pointer device state from a device list.
+ * @param _list A pointer to a PAL_WSI_INPUT_DEVICE_LIST for pointer devices.
+ * @param _index The zero-based index of the device state record to retrieve.
+ * @return A pointer to the PAL_WSI_POINTER_STATE representing the state of the device.
+ */
+#ifndef PAL_PointerDeviceState
+#define PAL_PointerDeviceState(_list, _index)                                  \
+    ((PAL_WSI_POINTER_STATE*) PAL_InputDeviceListState(_list, _index, sizeof(PAL_WSI_POINTER_STATE)))
+#endif
+
+/* @summary Retrieve a keyboard device state from a device list.
+ * @param _list A pointer to a PAL_WSI_INPUT_DEVICE_LIST for keyboard devices.
+ * @param _index The zero-based index of the device state record to retrieve.
+ * @return A pointer to the PAL_WSI_KEYBOARD_STATE representing the state of the device.
+ */
+#ifndef PAL_KeyboardDeviceState
+#define PAL_KeyboardDeviceState(_list, _index)                                 \
+    ((PAL_WSI_KEYBOARD_STATE*)PAL_InputDeviceListState(_list, _index, sizeof(PAL_WSI_KEYBOARD_STATE)))
 #endif
 
 /* @summary The device interface class GUID for monitor devices.
@@ -61,25 +153,192 @@ typedef enum PROCESS_DPI_AWARENESS {
 } PROCESS_DPI_AWARENESS;
 #endif /* WINVER < 0x0603 (Windows 8.1) */
 
+/* @summary Forward-declare the XInput types.
+ */
+struct _XINPUT_STATE;
+struct _XINPUT_VIBRATION;
+struct _XINPUT_KEYSTROKE;
+struct _XINPUT_CAPABILITIES;
+struct _XINPUT_BATTERY_INFORMATION;
+
+/* @summary Function pointer types for dynamically-loaded Win32 API entry points.
+ */
+typedef HRESULT (WINAPI *SetProcessDpiAwareness_Func     )(PROCESS_DPI_AWARENESS);
+typedef HRESULT (WINAPI *GetDpiForMonitor_Func           )(HMONITOR, MONITOR_DPI_TYPE, UINT*, UINT*);
+
+/* @summary Declare the signatures for the functions loaded from XInput.
+ */
+typedef void    (WINAPI *XInputEnable_Func               )(BOOL);
+typedef DWORD   (WINAPI *XInputGetState_Func             )(DWORD, struct _XINPUT_STATE*);
+typedef DWORD   (WINAPI *XInputSetState_Func             )(DWORD, struct _XINPUT_VIBRATION*);
+typedef DWORD   (WINAPI *XInputGetKeystroke_Func         )(DWORD, DWORD , struct _XINPUT_KEYSTROKE*);
+typedef DWORD   (WINAPI *XInputGetCapabilities_Func      )(DWORD, DWORD , struct _XINPUT_CAPABILITIES*);
+typedef DWORD   (WINAPI *XInputGetBatteryInformation_Func)(DWORD, BYTE  , struct _XINPUT_BATTERY_INFORMATION*);
+typedef DWORD   (WINAPI *XInputGetAudioDeviceIds_Func    )(DWORD, LPWSTR, UINT*, LPWSTR, UINT*);
+
+/* @summary Define the dispatch table used to access Win32 API functions that may or may not be present on the host.
+ */
+typedef struct PAL_WSI_WIN32_DISPATCH {
+    SetProcessDpiAwareness_Func            SetProcessDpiAwareness;             /* The SetProcessDpiAwareness entry point. Never NULL. */
+    GetDpiForMonitor_Func                  GetDpiForMonitor;                   /* The GetDpiForMonitor entry point. Never NULL. */
+    PAL_MODULE                             ShcoreModule;                       /* The handle of the Shcore.dll loaded into the process address space, or NULL. */
+} PAL_WSI_WIN32_DISPATCH;
+
+/* @summary Define the dispatch table used to access XInput functions that may or may not be present on the host.
+ */
+typedef struct PAL_WSI_XINPUT_DISPATCH {
+    XInputEnable_Func                      XInputEnable;                       /* The XInputEnable entry point. Never NULL. */
+    XInputGetState_Func                    XInputGetState;                     /* The XInputGetState entry point. Never NULL. */
+    XInputSetState_Func                    XInputSetState;                     /* The XInputSetState entry point. Never NULL. */
+    XInputGetKeystroke_Func                XInputGetKeystroke;                 /* The XInputGetKeystroke entry point. Never NULL. */
+    XInputGetCapabilities_Func             XInputGetCapabilities;              /* The XInputGetCapabilities entry point. Never NULL. */
+    XInputGetBatteryInformation_Func       XInputGetBatteryInformation;        /* The XInputGetBatteryInformation entry point. Never NULL. */
+    XInputGetAudioDeviceIds_Func           XInputGetAudioDeviceIds;            /* The XInputGetAudioDeviceIds entry point. Never NULL. */
+    PAL_MODULE                             XInputModule;                       /* The module handle of the XInput DLL loaded into the process address space, or NULL. */
+} PAL_WSI_XINPUT_DISPATCH;
+
+/* @summary Define the state data associated with a gamepad device.
+ */
+typedef struct PAL_WSI_GAMEPAD_STATE {
+    pal_uint32_t                           LTrigger;                           /* The left trigger value, in [0, 255]. */
+    pal_uint32_t                           RTrigger;                           /* The right trigger value, in [0, 255]. */
+    pal_uint32_t                           Buttons;                            /* An array of 32 bits representing the button states, where a set bit indicates a button in the down position. */
+    pal_float32_t                          LStick[4];                          /* The left analog stick X, Y, magnitude and normalized magnitude. */
+    pal_float32_t                          RStick[4];                          /* The right analog stick X, Y, magnitude and normalized magnitude. */
+} PAL_WSI_GAMEPAD_STATE;
+
+/* @summary Define the state data associated with a pointer device such as a mouse or a pen.
+ */
+typedef struct PAL_WSI_POINTER_STATE {
+    pal_sint32_t                           Pointer[2];                         /* The absolute X and Y coordinates of the pointer in virtual display space. */
+    pal_sint32_t                           Relative[3];                        /* The high definition relative X, Y and Z (wheel) values. The X and Y values are specified in mickeys. */
+    pal_uint32_t                           Buttons;                            /* An array of 32 bits representing the button states, where a set bit indicates a button in the down state. */
+    pal_uint32_t                           PointerFlags;                       /* One or more values of the PAL_WSI_POINTER_FLAGS enumeration used to specify post-processing to be performed on the pointer data. */
+} PAL_WSI_POINTER_STATE;
+
+/* @summary Define the state data associated with a keyboard device.
+ */
+typedef struct PAL_WSI_KEYBOARD_STATE {
+    pal_uint32_t                           KeyState[8];                        /* An array of 256 bits mapping scan code to key state, where a set bit indicates a key in the down state. */
+} PAL_WSI_KEYBOARD_STATE;
+
+/* @summary Define the data associated with a list of input devices of a particular type.
+ * Macros are used to access the DeviceState blob and retrieve the state data for each device.
+ */
+typedef struct PAL_WSI_INPUT_DEVICE_LIST {
+    pal_uint8_t                           *StateBase;                          /* The base address of the DeviceHandle and DeviceState data arrays. */
+    pal_uint32_t                           MaxDevices;                         /* The maximum number of devices of this particular type that can appear in the device list. */
+    pal_uint32_t                           DeviceCount;                        /* The number of devices that actually appear in the list. */
+    HANDLE                                *DeviceHandle;                       /* An array of MaxDevices handles, of which DeviceCount are actually valid, specifying the unique operating system identifier of each input device. */
+    pal_uint8_t                           *DeviceState;                        /* A pointer to an array of MaxDevices objects, of which DeviceCount are actually value, specifying the state data associated with each input device. */
+} PAL_WSI_INPUT_DEVICE_LIST;
+
+/* @summary Define the data associated with an input device membership set computed from two device list snapshots.
+ * This structure is a temporary structure allocated on the stack when computing an input snapshot.
+ */
+typedef struct PAL_WSI_INPUT_DEVICE_SET {
+#   define CAPACITY                       (PAL_WSI_MAX_INPUT_DEVICES * 2)
+    pal_uint32_t                           MaxDevices;                         /* The maximum number of devices of this particular type that can appear in the device list. */
+    pal_uint32_t                           DeviceCount;                        /* The number of devices that actually appear in the set.*/
+    HANDLE                                 DeviceIds [CAPACITY];               /* An array of MaxDevices handles, of which DeviceCount are actually valid, specifying the ... */
+    pal_uint32_t                           Membership[CAPACITY];               /* An array of MaxDevices bitflags, of which DeviceCount are actually valid, specifying the device membership attributes. */
+    pal_uint8_t                            PrevIndex [CAPACITY];               /* An array of MaxDevices index values, of which DeviceCount are actually valid, specifying the index of the device in the older device list. */
+    pal_uint8_t                            CurrIndex [CAPACITY];               /* An array of MaxDevices index values, of which DeviceCount are actually valid, specifying the index of the device in the newer device list. */
+#   undef  CAPACITY
+} PAL_WSI_INPUT_DEVICE_SET;
+
+/* @summary Define the data associated with a snapshot of the input devices attached to the system and their associated device state.
+ */
+typedef struct PAL_WSI_INPUT_DEVICE_STATE {
+    pal_uint64_t                           LastUpdateTime;                     /* The timestamp, in ticks, at which this state data was last written. */
+    pal_uint32_t                           GamepadPorts;                       /* A bit vector where a bit is set if the corresponding gamepad was connected. */
+    pal_uint32_t                           Reserved;                           /* Reserved for future use. Set to zero. */
+    PAL_WSI_INPUT_DEVICE_LIST              GamepadDeviceList;                  /* The list of gamepad devices attached to the system, including the observed state of each device. */
+    PAL_WSI_INPUT_DEVICE_LIST              PointerDeviceList;                  /* The list of pointer devices attached to the system, including the observed state of each device. */
+    PAL_WSI_INPUT_DEVICE_LIST              KeyboardDeviceList;                 /* The list of keyboard devices attached to the system, including the observed state of each device. */
+} PAL_WSI_INPUT_DEVICE_STATE;
+
+/* @summary Define the data associated with a PAL_INPUT handle. 
+ */
+typedef struct PAL_INPUT_DEVICE_DATA {
+    struct PAL_WINDOW_SYSTEM              *WindowSystem;                       /* A pointer back to the window system interface that manages the input device data. */
+    pal_uint32_t                           WriteIndex;                         /* The zero-based index into DeviceState of the current write buffer. */
+    pal_uint32_t                           Reserved;                           /* Reserved for future use. Set to zero. */
+    PAL_WSI_INPUT_DEVICE_STATE             DeviceState[2];                     /* The read and write snapshots of the input device state. The write buffer represents the newer state, while the read buffer represents the older state. */
+} PAL_INPUT_DEVICE_DATA;
+
+/* @summary Define the data associated with the host operating system window manager.
+ * The window system interface is responsible for tracking active application windows and processing user input.
+ * Swap the read and write buffers for the PAL_INPUT.
+ * Copy LatestState into the current read buffer for the PAL_INPUT.
+ * Update LatestState based on messages to NotifyWindow.
+ * Copy LatestState into the current write buffer for the PAL_INPUT. 
+ */
+typedef struct PAL_WINDOW_SYSTEM {
+    HWND                                   NotifyWindow;                       /* An invisible window used for receiving system and device change notifications. */
+    PAL_DISPLAY_DATA                      *ActiveDisplays;                     /* An array of DisplayCount items specifying information about active displays. */
+    pal_uint32_t                           DisplayCount;                       /* The number of displays attached to the system (as of the most recent update). */
+    pal_uint32_t                           DisplayCapacity;                    /* The maximum number of displays for which information can be stored. */
+    pal_uint32_t                           DisplayEventFlags;                  /* One or more bitwise OR'd PAL_DISPLAY_EVENT_FLAGS indicating changes that have occurred since the previous update. */
+    pal_uint32_t                           Reserved;                           /* Reserved for future use. Set to zero. */
+    PAL_DISPLAY_INFO                       PrimaryDisplay;                     /* Information about the primary display output. */
+    pal_uint8_t                            DisplayPad[48];                     /* Padding to separate display data from input state data. */
+
+    pal_uint32_t                           MaxGamepadDevices;                  /* The maximum number of gamepad devices for which input events will be reported. */
+    pal_uint32_t                           MaxPointerDevices;                  /* The maximum number of pointer devices for which input events will be reported. */
+    pal_uint32_t                           MaxKeyboardDevices;                 /* The maximum number of keyboard devices for which input events will be reported. */
+    pal_uint32_t                           GamepadListSize;                    /* The size of a gamepad device list, in bytes, not including the size of the PAL_WSI_INPUT_DEVICE_LIST structure. */
+    pal_uint32_t                           PointerListSize;                    /* The size of a pointer device list, in bytes, not including the size of the PAL_WSI_INPUT_DEVICE_LIST structure. */
+    pal_uint32_t                           KeyboardListSize;                   /* The size of a keyboard device list, in bytes, not including the size of the PAL_WSI_INPUT_DEVICE_LIST structure. */
+    pal_uint8_t                            InputPad[40];                       /* Padding to separate read-only input constants from input state data. */
+
+    SRWLOCK                                InputUpdateLock;                    /* A reader-writer lock acquired in exclusive mode during a window system update. */
+    pal_uint64_t                           LastUpdateTime;                     /* The timestamp (in ticks) of the most recent window system update. */
+    pal_uint64_t                           LastGamepadPoll;                    /* The timestamp (in ticks) of the most recent poll of the full set of gamepad ports. */
+    PAL_WSI_INPUT_DEVICE_STATE             LatestState;                        /* A copy of the most recent input device state observed by the system. */
+
+    PAL_HANDLE_TABLE                       InputTable;                         /* Table mapping PAL_INPUT to PAL_INPUT_DEVICE_DATA. */
+    PAL_HANDLE_TABLE                       WindowTable;                        /* Table mapping PAL_WINDOW to PAL_WINDOW_DATA. */
+    PAL_WSI_WIN32_DISPATCH                 Win32Runtime;                       /* The dispatch table used to call dynamically-loaded Win32 entry points. */
+    PAL_WSI_XINPUT_DISPATCH                XInputRuntime;                      /* The dispatch table used to call dynamically-loaded XInput entry points. */
+    HDEVNOTIFY                             DeviceNotify;                       /* The device notification handle used to receive notification about display and GPU attach/removal. */
+} PAL_WINDOW_SYSTEM;
+
+/* @sumamry Define a wrapper around the data associated with an input device state object.
+ */
+typedef struct PAL_INPUT_OBJECT {
+    PAL_INPUT                              Handle;                             /* The input object handle. */
+    PAL_INPUT_DEVICE_DATA                 *DeviceData;                         /* The input device data stream. */
+} PAL_INPUT_OBJECT;
+
 /* @summary Define a wrapper around the data associated with a window object.
  */
 typedef struct PAL_WINDOW_OBJECT {
-    PAL_WINDOW                             Handle;              /* The window object handle. */
-    PAL_WINDOW_DATA                       *WindowData;          /* The window data stream. */
+    PAL_WINDOW                             Handle;                             /* The window object handle. */
+    PAL_WINDOW_DATA                       *WindowData;                         /* The window data stream. */
 } PAL_WINDOW_OBJECT;
 
 /* @summary Define the object/handle namespaces utilized by the WSI module.
  */
 typedef enum PAL_WINDOW_SYSTEM_NAMESPACE {
-    PAL_WINDOW_SYSTEM_NAMESPACE_WINDOW   = 1UL,                 /* The namespace for PAL_WINDOW handles. */
+    PAL_WINDOW_SYSTEM_NAMESPACE_INPUT    = 1UL,                                /* The namespace for PAL_INPUT handles. */
+    PAL_WINDOW_SYSTEM_NAMESPACE_WINDOW   = 2UL,                                /* The namespace for PAL_WINDOW handles. */
 } PAL_WINDOW_SYSTEM_NAMESPACE;
 
-/* @summary Function pointer types for dynamically-loaded Win32 API entry points.
+/* @summary Define flags that can be bitwise OR'd to indicate the presence of an input device in an input device set.
  */
-typedef HRESULT (WINAPI           *SetProcessDpiAwareness_Func)(PROCESS_DPI_AWARENESS);
-typedef HRESULT (WINAPI           *GetDpiForMonitor_Func      )(HMONITOR, MONITOR_DPI_TYPE, UINT*, UINT*);
-static SetProcessDpiAwareness_Func SetProcessDpiAwareness_Fn  = NULL;
-static GetDpiForMonitor_Func       GetDpiForMonitor_Fn        = NULL;
+typedef enum PAL_WSI_DEVICE_SET_MEMBERSHIP {
+    PAL_WSI_DEVICE_SET_MEMBERSHIP_NONE   =(0UL << 0),                          /* The device is not present in the previous snapshot. */
+    PAL_WSI_DEVICE_SET_MEMBERSHIP_PREV   =(1UL << 0),                          /* The device is present in the previous snapshot. */
+    PAL_WSI_DEVICE_SET_MEMBERSHIP_CURR   =(1UL << 1),                          /* The device is present in the current snapshot. */
+} PAL_WSI_DEVICE_SET_MEMBERSHIP;
+
+/* @summary Define flags that can be bitwise OR'd to indicate required post-processing on a pointer device position.
+ */
+typedef enum PAL_WSI_POINTER_FLAGS {
+    PAL_WSI_POINTER_FLAGS_NONE           =(0UL << 0),                          /* No pointer post-processing is required. */
+    PAL_WSI_POINTER_FLAG_ABSOLUTE        =(1UL << 0),                          /* The device only specifies absolute position. */
+} PAL_WSI_POINTER_FLAGS;
 
 /* @summary Implement SetProcessDpiAwareness for systems prior to Windows 8.1.
  * @param level One of the values of the PROCESS_DPI_AWARENESS enumeration.
@@ -126,6 +385,1040 @@ static HRESULT WINAPI GetDpiForMonitor_Stub
         return E_INVALIDARG;
     }
 }
+
+/* @summary Define a stub no-op implementation of the XInputEnable API.
+ * @param enable If enable is FALSE XInput will only send neutral data in response to XInputGetState.
+ */
+static void WINAPI
+XInputEnable_Stub
+(
+    BOOL enable
+)
+{
+    PAL_UNUSED_ARG(enable);
+}
+
+/* @summary Define a stub no-op implementation of the XInputGetState API.
+ * @param user_index The index of the user's controller, in [0, 3].
+ * @param state Pointer to an XINPUT_STATE structure that receives the current state of the controller.
+ * @return ERROR_SUCCESS or ERROR_DEVICE_NOT_CONNECTED.
+ */
+static DWORD WINAPI
+XInputGetState_Stub
+(
+    DWORD            user_index, 
+    struct _XINPUT_STATE *state
+)
+{
+    PAL_UNUSED_ARG(user_index);
+    PAL_UNUSED_ARG(state);
+    return ERROR_DEVICE_NOT_CONNECTED;
+}
+
+/* @summary Define a stub no-op implementation of the XInputSetState API.
+ * @param user_index The index of the user's controller, in [0, 3].
+ * @param vibration Pointer to an XINPUT_VIBRATION structure containing vibration information to send to the controller.
+ * @return ERROR_SUCCESS or ERROR_DEVICE_NOT_CONNECTED.
+ */
+static DWORD WINAPI
+XInputSetState_Stub
+(
+    DWORD                    user_index, 
+    struct _XINPUT_VIBRATION *vibration
+)
+{
+    PAL_UNUSED_ARG(user_index);
+    PAL_UNUSED_ARG(vibration);
+    return ERROR_DEVICE_NOT_CONNECTED;
+}
+
+/* @summary Define a stub no-op implementation of the XInputGetKeystroke API.
+ * @param user_index The index of the user's controller, in [0, 3].
+ * @param reserved This value is reserved for future use and should be set to zero.
+ * @param keystroke Pointer to an XINPUT_KEYSTROKE structure that receives an input event.
+ * @return ERROR_SUCCESS, ERROR_EMPTY or ERROR_DEVICE_NOT_CONNECTED.
+ */
+static DWORD WINAPI
+XInputGetKeystroke_Stub
+(
+    DWORD                    user_index, 
+    DWORD                      reserved, 
+    struct _XINPUT_KEYSTROKE *keystroke
+)
+{
+    PAL_UNUSED_ARG(user_index);
+    PAL_UNUSED_ARG(reserved);
+    PAL_UNUSED_ARG(keystroke);
+    return ERROR_DEVICE_NOT_CONNECTED;
+}
+
+/* @summary Define a stub no-op implementation of the XInputGetKeystroke API.
+ * @param user_index The index of the user's controller, in [0, 3].
+ * @param flags Input flags that identify the controller type. Either 0 or XINPUT_FLAG_GAMEPAD.
+ * @param capabilities Pointer to an XINPUT_CAPABILITIES structure that receives the controller capabilities.
+ * @return ERROR_SUCCESS or ERROR_DEVICE_NOT_CONNECTED.
+ */
+static DWORD WINAPI
+XInputGetCapabilities_Stub
+(
+    DWORD                          user_index, 
+    DWORD                               flags, 
+    struct _XINPUT_CAPABILITIES *capabilities
+)
+{
+    PAL_UNUSED_ARG(user_index);
+    PAL_UNUSED_ARG(flags);
+    PAL_UNUSED_ARG(capabilities);
+    return ERROR_DEVICE_NOT_CONNECTED;
+}
+
+/* @summary Define a stub no-op implementation of the XInputGetBatteryInformation API.
+ * @param user_index The index of the user's controller, in [0, 3].
+ * @param device_type Specifies which device associated with this user index should be queried. Must be BATTERY_DEVTYPE_GAMEPAD or BATTERY_DEVTYPE_HEADSET.
+ * @param battery_info Pointer to an XINPUT_BATTERY_INFORMATION that receives battery information.
+ * @return ERROR_SUCCESS or ERROR_DEVICE_NOT_CONNECTED.
+ */
+static DWORD WINAPI
+XInputGetBatteryInformation_Stub
+(
+    DWORD                                 user_index, 
+    BYTE                                 device_type, 
+    struct _XINPUT_BATTERY_INFORMATION *battery_info
+)
+{
+    PAL_UNUSED_ARG(user_index);
+    PAL_UNUSED_ARG(device_type);
+    PAL_UNUSED_ARG(battery_info);
+    return ERROR_DEVICE_NOT_CONNECTED;
+}
+
+/* @summary Define a stub no-op implementation of the XInputGetAudioDeviceIds API.
+ * @param user_index The index of the user's controller, in [0, 3].
+ * @param render_device_id Windows Core Audio device ID string for render (speakers).
+ * @param render_device_chars The size, in wide-chars, of the render device ID string buffer.
+ * @param capture_device_id Windows Core Audio device ID string for capture (microphone).
+ * @param capture_device_chars The size, in wide-chars, of the capture device ID string buffer.
+ * @return ERROR_SUCCESS or ERROR_DEVICE_NOT_CONNECTED.
+ */
+static DWORD WINAPI
+XInputGetAudioDeviceIds_Stub
+(
+    DWORD             user_index, 
+    LPWSTR      render_device_id, 
+    UINT    *render_device_chars, 
+    LPWSTR     capture_device_id, 
+    UINT   *capture_device_chars
+)
+{
+    if (render_device_chars != NULL) {
+       *render_device_chars = 0;
+    }
+    if (capture_device_chars != NULL) {
+       *capture_device_chars = 0;
+    }
+    PAL_UNUSED_ARG(user_index);
+    PAL_UNUSED_ARG(render_device_id);
+    PAL_UNUSED_ARG(capture_device_id);
+    return ERROR_DEVICE_NOT_CONNECTED;
+}
+
+/* @summary For a given RawInput keyboard packet, retrieve the virtual key identifier and the raw scan code.
+ * @param vkey_code On return, this location is updated with the virtual key identifier.
+ * @param scan_code On return, this location is updated with the raw scan code value.
+ * @param key The RawInput keyboard packet to process.
+ * @return Zero if the key data is part of an escaped sequence and should be ignored, or non-zero if the key data was retrieved.
+ */
+static int
+PAL_GetVirtualKeyAndScanCode
+(
+    pal_uint32_t *vkey_code, 
+    pal_uint32_t *scan_code,
+    RAWKEYBOARD const  *key 
+)
+{
+    pal_uint32_t vkey = key->VKey;
+    pal_uint32_t scan = key->MakeCode;
+    pal_uint32_t   e0 = key->Flags & RI_KEY_E0;
+
+    if (vkey == 255) { /* discard fake keys; these are just part of an escaped sequence */
+       *vkey_code = 0;
+       *scan_code = 0;
+        return 0;
+    }
+    if (vkey == VK_SHIFT) {   /* correct left/right shift */
+        vkey  = MapVirtualKey(scan, MAPVK_VSC_TO_VK_EX);
+    }
+    if (vkey == VK_NUMLOCK) { /* correct PAUSE/BREAK and NUMLOCK. set the extended bit */
+        scan  = MapVirtualKey(vkey, MAPVK_VK_TO_VSC) | 0x100;
+    }
+    if (key->Flags & RI_KEY_E1) {
+        /* for escaped sequences, turn the virtual key into the correct scan code.
+         * unfortunately, MapVirtualKey can't handle VK_PAUSE, so do that manually. */
+        if (vkey != VK_PAUSE) scan = MapVirtualKey(vkey, MAPVK_VK_TO_VSC);
+        else scan = 0x45;
+    }
+   /* map left/right versions of various keys */
+    switch (vkey) {
+        case VK_CONTROL:  /* left/right CTRL */
+            vkey =  e0 ? VK_RCONTROL : VK_LCONTROL;
+            break;
+        case VK_MENU:     /* left/right ALT  */
+            vkey =  e0 ? VK_RMENU : VK_LMENU;
+            break;
+        case VK_RETURN:
+            vkey =  e0 ? VK_SEPARATOR : VK_RETURN;
+            break;
+        case VK_INSERT:
+            vkey = !e0 ? VK_NUMPAD0 : VK_INSERT;
+            break;
+        case VK_DELETE:
+            vkey = !e0 ? VK_DECIMAL : VK_DELETE;
+            break;
+        case VK_HOME:
+            vkey = !e0 ? VK_NUMPAD7 : VK_HOME;
+            break;
+        case VK_END:
+            vkey = !e0 ? VK_NUMPAD1 : VK_END;
+            break;
+        case VK_PRIOR:
+            vkey = !e0 ? VK_NUMPAD9 : VK_PRIOR;
+            break;
+        case VK_NEXT:
+            vkey = !e0 ? VK_NUMPAD3 : VK_NEXT;
+            break;
+        case VK_LEFT:
+            vkey = !e0 ? VK_NUMPAD4 : VK_LEFT;
+            break;
+        case VK_RIGHT:
+            vkey = !e0 ? VK_NUMPAD6 : VK_RIGHT;
+            break;
+        case VK_UP:
+            vkey = !e0 ? VK_NUMPAD8 : VK_UP;
+            break;
+        case VK_DOWN:
+            vkey = !e0 ? VK_NUMPAD2 : VK_DOWN;
+            break;
+        case VK_CLEAR:
+            vkey = !e0 ? VK_NUMPAD5 : VK_CLEAR;
+            break;
+    }
+   *vkey_code = vkey;
+   *scan_code = scan;
+    return 1;
+}
+
+/* @summary Retrieve the display name for a given virtual key code.
+ * @param buffer The buffer to retrieve the nul-terminated key display name.
+ * @param buffer_max_chars The maximum number of characters that can be written to buffer.
+ * @param vkey_code The virtual key code to retrieve the display name for.
+ * @return The length of the string written into the buffer, in characters, not including the nul.
+ */
+static pal_usize_t
+PAL_CopyKeyDisplayName
+(
+    WCHAR                *buffer, 
+    pal_usize_t buffer_max_chars, 
+    pal_uint32_t       vkey_code
+)
+{
+    pal_uint32_t scan_code = 0;
+    pal_uint32_t        e0 = 0;
+
+    if (vkey_code != VK_PAUSE) {
+        if (vkey_code != VK_NUMLOCK) {   /* common case - map the virtual key code to the scan code */
+            scan_code  = MapVirtualKey(vkey_code, MAPVK_VK_TO_VSC);
+        } else { /* correct PAUSE/BREAK and NUMLOCK - set the extended bit */
+            scan_code  = MapVirtualKey(vkey_code, MAPVK_VK_TO_VSC) | 0x100;
+        }
+    }
+    else { /* correctly handle VK_PAUSE */
+        scan_code = 0x45;
+    }
+    /* determine whether to set the extended-key flag */
+    if (vkey_code == VK_RCONTROL || vkey_code == VK_RMENU  || vkey_code == VK_SEPARATOR || 
+        vkey_code == VK_INSERT   || vkey_code == VK_DELETE || vkey_code == VK_HOME      || 
+        vkey_code == VK_END      || vkey_code == VK_PRIOR  || vkey_code == VK_NEXT      || 
+        vkey_code == VK_LEFT     || vkey_code == VK_RIGHT  || vkey_code == VK_UP        || 
+        vkey_code == VK_DOWN     || vkey_code == VK_CLEAR) { /* set the extended key flag */
+        e0 = 1;
+    }
+    return (pal_usize_t)GetKeyNameTextW((LONG)((scan_code << 16) | (e0 << 24)), buffer, (int) buffer_max_chars);
+}
+
+/* @summary Copy the state data and device count from one PAL_WSI_INPUT_DEVICE_LIST to another.
+ * @param dst The destination PAL_WSI_INPUT_DEVICE_LIST.
+ * @param src The source PAL_WSI_INPUT_DEVICE_LIST.
+ * @param nbytes The size of the input device list state data, in bytes.
+ */
+static PAL_INLINE void
+PAL_InputDeviceListCopy
+(
+    struct PAL_WSI_INPUT_DEVICE_LIST * PAL_RESTRICT dst, 
+    struct PAL_WSI_INPUT_DEVICE_LIST * PAL_RESTRICT src, 
+    pal_usize_t                                  nbytes
+)
+{
+    dst->MaxDevices   = src->MaxDevices;
+    dst->DeviceCount  = src->DeviceCount;
+    PAL_CopyMemory(dst->StateBase, src->StateBase, nbytes);
+}
+
+/* @summary Locate a particular input device given its operating system identifier.
+ * @param devices The input device list to search.
+ * @param handle The operating system handle of the input device.
+ * @param index On return, if the device is found, this location is updated with the zero-based index of the device.
+ * @return Zero if the device is found, or non-zero if the device is not found.
+ */
+static int
+PAL_InputDeviceListSearchByHandle
+(
+    struct PAL_WSI_INPUT_DEVICE_LIST *devices, 
+    HANDLE                             handle, 
+    pal_uint32_t                       *index
+)
+{
+    pal_uint32_t i, n;
+    HANDLE *devid = devices->DeviceHandle;
+    for (i = 0, n = devices->DeviceCount; i < n; ++i) {
+        if (devid[i] == handle) {
+            PAL_Assign(index, i);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* @summary Handle an input device being attached to the system. If the device was not previously known, add it to the device list.
+ * @param devices The PAL_WSI_INPUT_DEVICE_LIST to search and possibly update.
+ * @param handle The operating system identifer of the device that was attached.
+ * @param default_state Pointer to a structure initialized with the default device state.
+ * @param state_size The size of the device state record, in bytes.
+ * @param device_index If the device was inserted into the list, or was already in the list, the device index is stored in this location on return.
+ * @return Zero if the device attachment was handled, or non-zero if the device attachment could not be handled because the device list is full.
+ */
+static int
+PAL_InputDeviceListHandleAttach
+(
+    struct PAL_WSI_INPUT_DEVICE_LIST *devices, 
+    HANDLE                             handle, 
+    void                       *default_state, 
+    pal_usize_t                    state_size, 
+    pal_uint32_t                *device_index
+)
+{
+    pal_uint32_t i, n;
+    HANDLE *devid = devices->DeviceHandle;
+    for (i = 0, n = devices->DeviceCount; i < n; ++i) {
+        if (devid[i] == handle) {
+            PAL_Assign(device_index, i);
+            return 0;
+        }
+    }
+    /* add the device to the list if possible */
+    if (n != devices->DeviceCount) {
+        pal_uint8_t   *state = PAL_InputDeviceListState(devices, n, state_size);
+        PAL_CopyMemory(state , default_state, state_size);
+        devices->DeviceHandle[n] = handle;
+        devices->DeviceCount = n + 1;
+        PAL_Assign(device_index, n);
+        return 0;
+    }
+    return -1;
+}
+
+/* @summary Handle an input device being removed from the system. If the device is known, it is removed from the device list.
+ * @param devices The PAL_WSI_INPUT_DEVICE_LIST to query and possibly update.
+ * @param handle The operating system identifier of the device that was removed.
+ * @param state_size The size of the device state data, in bytes.
+ */
+static void
+PAL_InputDeviceListHandleRemove
+(
+    struct PAL_WSI_INPUT_DEVICE_LIST *devices, 
+    HANDLE                             handle, 
+    pal_usize_t                    state_size
+)
+{
+    pal_uint32_t i, n;
+    HANDLE *devid = devices->DeviceHandle;
+    for (i = 0, n = devices->DeviceCount; i < n; ++i) {
+        if (devid[i] == handle) {
+            if (i != (n-1)) {
+                /* swap the last item into the slot occupied by item i */
+                pal_uint8_t   *dst = PAL_InputDeviceListState(devices, i  , state_size);
+                pal_uint8_t   *src = PAL_InputDeviceListState(devices, n-1, state_size);
+                devices->DeviceHandle[i] = devices->DeviceHandle[n-1];
+                PAL_CopyMemory(dst, src, state_size);
+            } 
+            devices->DeviceCount--;
+            return;
+        }
+    }
+}
+
+/* @summary Initialize an input device set given two device list snapshots.
+ * @param set The device set to populate.
+ * @param prev The device list from the older state snapshot.
+ * @param curr The device list from the newer state snapshot.
+ */
+static void
+PAL_InputDeviceSetInit
+(
+    struct PAL_WSI_INPUT_DEVICE_SET   *set, 
+    struct PAL_WSI_INPUT_DEVICE_LIST *prev, 
+    struct PAL_WSI_INPUT_DEVICE_LIST *curr
+)
+{
+    pal_uint32_t i, j, n;
+
+    /* the set always has a fixed capacity */
+    set->MaxDevices = PAL_CountOf(set->DeviceIds);
+
+    /* initialize the set based on the older snapshot */
+    for (i = 0, n = prev->DeviceCount; i < n; ++i) {
+        set->DeviceIds [i] = prev->DeviceHandle[i];
+        set->Membership[i] = PAL_WSI_DEVICE_SET_MEMBERSHIP_PREV;
+        set->PrevIndex [i] =(pal_uint8_t) i;
+        set->CurrIndex [i] =(pal_uint8_t) 0xFF;
+        set->DeviceCount++;
+    }
+    /* initialize any unused entries */
+    for (i = n, n = set->MaxDevices; i < n; ++i) {
+        set->DeviceIds [i] = INVALID_HANDLE_VALUE;
+        set->Membership[i] = PAL_WSI_DEVICE_SET_MEMBERSHIP_NONE;
+        set->PrevIndex [i] =(pal_uint8_t) 0xFF;
+        set->CurrIndex [i] =(pal_uint8_t) 0xFF;
+    }
+    /* update the state based on the newer snapshot */
+    for (i = 0, n = curr->DeviceCount; i < n; ++i) {
+        HANDLE id = curr->DeviceHandle[i];
+        pal_uint32_t ix = set->DeviceCount;
+        pal_uint32_t in = 1;
+        for (j = 0;  j < ix; ++j) {
+            if (set->DeviceIds[j] == id) {
+                ix = j; /* update existing entry */
+                in = 0; /* don't increment device count */
+                break;
+            }
+        }
+        set->DeviceIds [ix]  = id;
+        set->Membership[ix] |= PAL_WSI_DEVICE_SET_MEMBERSHIP_CURR;
+        set->CurrIndex [ix]  =(pal_uint8_t) i;
+        set->DeviceCount    += in;
+    }
+}
+
+/* @summary Apply scaled radial deadzone logic to an analog stick input.
+ * @param stick_xymn A four-element array that will store the normalized x- and y-components of the input direction, the magnitude, and the normalized magnitude.
+ * @param stick_x The x-axis component of the analog input.
+ * @param stick_y The y-axis component of the analog input.
+ * @param deadzone The deadzone size as a percentage of total input range (in [0, 1]).
+ */
+static void
+PAL_ApplyInputScaledRadialDeadzone
+(
+    pal_float32_t  *stick_xymn,
+    pal_sint16_t       stick_x, 
+    pal_sint16_t       stick_y, 
+    pal_float32_t     deadzone
+)
+{
+    pal_float32_t  x = stick_x;
+    pal_float32_t  y = stick_y;
+    pal_float32_t  m =(pal_float32_t) sqrt(x * x + y * y);
+    pal_float32_t nx = x / m;
+    pal_float32_t ny = y / m;
+    pal_float32_t  n;
+
+    if (m < deadzone) {  /* drop the input; it falls within the deadzone */
+        stick_xymn[0] = 0;
+        stick_xymn[1] = 0;
+        stick_xymn[2] = 0;
+        stick_xymn[3] = 0;
+    } else {  /* rescale the input into the non-dead space */
+        n = (m - deadzone) / (1.0f - deadzone);
+        stick_xymn[0] = nx * n;
+        stick_xymn[1] = ny * n;
+        stick_xymn[2] = m;
+        stick_xymn[3] = n;
+    }
+}
+
+/* @summary Process an XInput gamepad state packet to update the state of a gamepad device.
+ * @param devices The PAL_WSI_INPUT_DEVICE_LIST to query and update.
+ * @param port_index The zero-based index of the port to which the gamepad is attached.
+ * @param input_packet The XInput gamepad state snapshot.
+ * @param device_index On return, this location is updated with the zero-based index of the device in the device list.
+ * @return Zero if the input packet is successfully processed, or non-zero if an error occurred.
+ */
+static int
+PAL_ProcessGamepadInputPacket
+(
+    struct PAL_WSI_INPUT_DEVICE_LIST *devices, 
+    DWORD                          port_index, 
+    struct _XINPUT_STATE const  *input_packet, 
+    pal_uint32_t                *device_index
+)
+{
+    PAL_WSI_GAMEPAD_STATE   *state = NULL;
+    XINPUT_GAMEPAD const  *gamepad =&input_packet->Gamepad;
+    pal_uintptr_t         port_ptr =(uintptr_t) port_index;
+    HANDLE                  device =(HANDLE   ) port_ptr;
+    pal_uint32_t             index = 0;
+    pal_float32_t       deadzone_l = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE  / 32767.0f;
+    pal_float32_t       deadzone_r = XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE / 32767.0f;
+
+    if (PAL_InputDeviceListSearchByHandle(devices, device, &index) == 0) { /* already-known device */
+        state = PAL_GamepadDeviceState(devices, index);
+    } else if (devices->DeviceCount != devices->MaxDevices) { /* this is a newly-seen device - attach it */
+        index = devices->DeviceCount;
+        state = PAL_GamepadDeviceState(devices, index);
+        PAL_ZeroMemory(state, sizeof(PAL_WSI_GAMEPAD_STATE));
+        devices->DeviceHandle[index] = device;
+        devices->DeviceCount++;
+    } else { /* too many gamepad devices attached */
+        return -1;
+    }
+
+    /* update the input device state and apply deadzone logic */
+    state->LTrigger = gamepad->bLeftTrigger  > XINPUT_GAMEPAD_TRIGGER_THRESHOLD ? gamepad->bLeftTrigger  : 0;
+    state->RTrigger = gamepad->bRightTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD ? gamepad->bRightTrigger : 0;
+    state->Buttons  = gamepad->wButtons;
+    PAL_ApplyInputScaledRadialDeadzone(state->LStick, gamepad->sThumbLX, gamepad->sThumbLY, deadzone_l);
+    PAL_ApplyInputScaledRadialDeadzone(state->RStick, gamepad->sThumbRX, gamepad->sThumbRY, deadzone_r);
+    PAL_Assign(device_index, index);
+    return 0;
+}
+
+/* @summary Process a RawInput mouse packet to update the state of a pointer device.
+ * @param devices The PAL_WSI_INPUT_DEVICE_LIST to query and update.
+ * @param input_packet The RawInput mouse packet.
+ * @param device_index On return, this location is updated with the zero-based index of the device in the device list.
+ * @return Zero if the input packet is successfully processed, or non-zero if an error occurred.
+ */
+static int
+PAL_ProcessMouseInputPacket
+(
+    struct PAL_WSI_INPUT_DEVICE_LIST *devices, 
+    RAWINPUT const              *input_packet, 
+    pal_uint32_t                *device_index
+)
+{
+    RAWINPUTHEADER   const *header = &input_packet->header;
+    RAWMOUSE         const  *mouse = &input_packet->data.mouse;
+    PAL_WSI_POINTER_STATE   *state = NULL;
+    pal_uint32_t             index = 0;
+    POINT                   cursor;
+    USHORT            button_flags;
+
+    if (PAL_InputDeviceListSearchByHandle(devices, header->hDevice, &index) == 0) { /* already known */
+        state = PAL_PointerDeviceState(devices, index);
+    } else if (devices->DeviceCount != devices->MaxDevices) { /* newly attached */
+        index = devices->DeviceCount;
+        state = PAL_PointerDeviceState(devices, index);
+        PAL_ZeroMemory(state, sizeof(PAL_WSI_POINTER_STATE));
+        devices->DeviceHandle[index] = header->hDevice;
+        devices->DeviceCount++;
+    } else { /* too many pointer devices */
+        return -1;
+    }
+
+    /* retrieve the current mouse cursor position, in pixels */
+    GetCursorPos(&cursor);
+    state->Pointer[0] = cursor.x;
+    state->Pointer[1] = cursor.y;
+
+    /* set the high-resolution device position values */
+    if (mouse->usFlags & MOUSE_MOVE_ABSOLUTE)
+    {   /* the device is a pen, touchscreen, etc. and specifies only absolute coordinates */
+        state->Relative[0]  = mouse->lLastX;
+        state->Relative[1]  = mouse->lLastY;
+        state->PointerFlags = PAL_WSI_POINTER_FLAG_ABSOLUTE;
+    }
+    else
+    {   /* the device has specified relative coordinates */
+        state->Relative[0] += mouse->lLastX;
+        state->Relative[1] += mouse->lLastY;
+        state->PointerFlags = PAL_WSI_POINTER_FLAGS_NONE;
+    }
+
+    button_flags = mouse->usButtonFlags;
+    if (button_flags & RI_MOUSE_WHEEL)
+    {   /* mouse wheel data was supplied with the input packet */
+        state->Relative[2] = (pal_sint16_t) mouse->usButtonData;
+    }
+    else
+    {   /* no mouse wheel data was supplied */
+        state->Relative[2] = (pal_sint16_t) 0;
+    }
+    /* rebuild the button state vector. Raw Input supports up to 5 buttons. */
+    if (button_flags & RI_MOUSE_BUTTON_1_DOWN) state->Buttons |=  MK_LBUTTON;
+    if (button_flags & RI_MOUSE_BUTTON_1_UP  ) state->Buttons &= ~MK_LBUTTON;
+    if (button_flags & RI_MOUSE_BUTTON_2_DOWN) state->Buttons |=  MK_RBUTTON;
+    if (button_flags & RI_MOUSE_BUTTON_2_UP  ) state->Buttons &= ~MK_RBUTTON;
+    if (button_flags & RI_MOUSE_BUTTON_3_DOWN) state->Buttons |=  MK_MBUTTON;
+    if (button_flags & RI_MOUSE_BUTTON_3_UP  ) state->Buttons &= ~MK_MBUTTON;
+    if (button_flags & RI_MOUSE_BUTTON_4_DOWN) state->Buttons |=  MK_XBUTTON1;
+    if (button_flags & RI_MOUSE_BUTTON_4_UP  ) state->Buttons &= ~MK_XBUTTON1;
+    if (button_flags & RI_MOUSE_BUTTON_5_DOWN) state->Buttons |=  MK_XBUTTON2;
+    if (button_flags & RI_MOUSE_BUTTON_5_UP  ) state->Buttons &= ~MK_XBUTTON2;
+    PAL_Assign(device_index, index);
+    return 0;
+}
+
+/* @summary Process a RawInput keyboard packet to update the state of a keyboard device.
+ * @param devices The PAL_WSI_INPUT_DEVICE_LIST to query and update.
+ * @param input_packet The RawInput keyboard packet.
+ * @param device_index On return, this location is updated with the zero-based index of the device in the device list.
+ * @return Zero if the input packet is successfully processed, or non-zero if an error occurred.
+ */
+static int
+PAL_ProcessKeyboardInputPacket
+(
+    struct PAL_WSI_INPUT_DEVICE_LIST *devices, 
+    RAWINPUT const              *input_packet, 
+    pal_uint32_t                *device_index
+)
+{
+    RAWINPUTHEADER   const *header = &input_packet->header;
+    RAWKEYBOARD      const    *key = &input_packet->data.keyboard;
+    PAL_WSI_KEYBOARD_STATE  *state = NULL;
+    pal_uint32_t             index = 0;
+    pal_uint32_t         vkey_code = 0;
+    pal_uint32_t         scan_code = 0;
+
+    if (PAL_InputDeviceListSearchByHandle(devices, header->hDevice, &index) == 0) { /* already known */
+        state = PAL_KeyboardDeviceState(devices, index);
+    } else if (devices->DeviceCount != devices->MaxDevices) { /* newly attached */
+        index = devices->DeviceCount;
+        state = PAL_KeyboardDeviceState(devices, index);
+        PAL_ZeroMemory(state, sizeof(PAL_WSI_KEYBOARD_STATE));
+        devices->DeviceHandle[index] = header->hDevice;
+        devices->DeviceCount++;
+    } else { /* too many keyboard devices attached */
+        return -1;
+    }
+
+    if (!PAL_GetVirtualKeyAndScanCode(&vkey_code, &scan_code, key))
+    {   /* discard fake keys; these are just part of an escaped sequence */
+        PAL_Assign(device_index, index);
+        return 0;
+    }
+    if ((key->Flags & RI_KEY_BREAK) == 0) {
+        /* the key is currently pressed; set the bit corresponding to the virtual key code */
+        state->KeyState[vkey_code >> 5] |= (1UL << (vkey_code & 0x1F));
+    } else { /* the key was just released; clear the bit corresponding to the virtual key code */
+        state->KeyState[vkey_code >> 5] &=~(1UL << (vkey_code & 0x1F));
+    }
+    PAL_Assign(device_index, index);
+    return 0;
+}
+
+/* @summary Poll all XInput gamepads currently attached to the system and update the input device state.
+ * @param devices The PAL_WSI_INPUT_DEVICE_LIST to query and possibly update.
+ * @param ports_out On return, this value has one bit set for each attached gamepad.
+ * @param ports_inp A bitvector specifying the gamepad ports to poll, or CORE_INPUT_ALL_GAMEPAD_PORTS to poll all ports.
+ * @param disp The XInput dispatch table.
+ * @return The number of gamepad devices attached to the system.
+ */
+static pal_uint32_t
+PAL_PollXInputGamepads
+(
+    struct PAL_WSI_INPUT_DEVICE_LIST *devices,
+    pal_uint32_t                   *ports_out,
+    pal_uint32_t                    ports_inp, 
+    struct PAL_WSI_XINPUT_DISPATCH    *xinput 
+)
+{
+    XINPUT_STATE   state;
+    DWORD         result = ERROR_SUCCESS;
+    pal_uint32_t outbits = 0;
+    pal_uint32_t   count = 0;
+    pal_uint32_t       i;
+    for (i = 0; i < XUSER_MAX_COUNT; ++i) {
+        if (ports_inp & (1UL << i)) {
+            if ((result  = xinput->XInputGetState(i, &state)) == ERROR_SUCCESS) {
+                PAL_ProcessGamepadInputPacket(devices, i, &state, NULL);
+                outbits |= (1UL << i);
+                count++;
+            }
+        }
+    }
+   *ports_out = outbits;
+    return count;
+}
+
+#if 0
+/* @summary Given two gamepad state snapshots, generate events for buttons down, pressed and released.
+ * @param events The gamepad events structure to populate.
+ * @param prev The state snapshot for the device from the previous update.
+ * @param curr The state snapshot for the device from the in-progress update.
+ */
+static void
+PAL_GenerateGamepadInputEvents
+(
+    CORE_INPUT_GAMEPAD_EVENTS     *events, 
+    CORE__INPUT_GAMEPAD_STATE const *prev, 
+    CORE__INPUT_GAMEPAD_STATE const *curr
+)
+{
+    uint32_t   max_events = events->MaxButtonEvents;
+    uint32_t   curr_state = curr->Buttons;
+    uint32_t   prev_state = prev->Buttons;
+    uint32_t      changes =(curr_state ^ prev_state);
+    uint32_t        downs =(changes    & curr_state);
+    uint32_t          ups =(changes    &~curr_state);
+    uint32_t        num_d = 0;
+    uint32_t        num_p = 0;
+    uint32_t        num_r = 0;
+    uint32_t         mask;
+    uint32_t       button;
+    uint32_t         i, j;
+
+    events->LeftTrigger         = (float) curr->LTrigger / (float) (255 - XINPUT_GAMEPAD_TRIGGER_THRESHOLD);
+    events->RightTrigger        = (float) curr->RTrigger / (float) (255 - XINPUT_GAMEPAD_TRIGGER_THRESHOLD);
+    events->LeftStick[0]        =  curr->LStick[0];
+    events->LeftStick[1]        =  curr->LStick[1];
+    events->LeftStickMagnitude  =  curr->LStick[3];
+    events->RightStick[0]       =  curr->RStick[0];
+    events->RightStick[1]       =  curr->RStick[1];
+    events->RightStickMagnitude =  curr->RStick[3];
+    for (i = 0; i < 32; ++i)
+    {
+        mask    = 1UL << i;
+        button  = mask; /* XINPUT_GAMEPAD_x */
+
+        if (num_d < max_events && (curr_state & mask) != 0)
+        {   /* this button is currently pressed */
+            events->ButtonsDown[num_d++] = (uint16_t) button;
+        }
+        if (num_p < max_events && (downs & mask) != 0)
+        {   /* this button was just pressed */
+            events->ButtonsPressed[num_p++] = (uint16_t) button;
+        }
+        if (num_r < max_events && (ups & mask) != 0)
+        {   /* this button was just released */
+            events->ButtonsReleased[num_r++] = (uint16_t) button;
+        }
+    }
+    events->ButtonDownCount     = num_d;
+    events->ButtonPressedCount  = num_p;
+    events->ButtonReleasedCount = num_r;
+}
+
+/* @summary Build a device set and generate events related to device attachment and removal.
+ * @param events The CORE_INPUT_EVENTS to update.
+ * @param device_list_prev The gamepad device list from the previous update.
+ * @param device_list_curr The gamepad device list from the current update.
+ */
+static void
+CORE__GenerateGamepadDeviceEvents
+(
+    CORE_INPUT_EVENTS                 *events, 
+    CORE__INPUT_DEVICE_LIST *device_list_prev, 
+    CORE__INPUT_DEVICE_LIST *device_list_curr
+)
+{
+    uint32_t                             i, n;
+    CORE__INPUT_DEVICE_SET         device_set;
+    CORE__DetermineInputDeviceSet(&device_set, device_list_prev, device_list_curr);
+    events->GamepadAttachCount = 0;
+    events->GamepadRemoveCount = 0;
+    events->GamepadDeviceCount = 0;
+    for (i = 0, n = device_set.DeviceCount; i < n; ++i)
+    {
+        switch (device_set.Membership[i])
+        {
+        case CORE__INPUT_DEVICE_SET_MEMBERSHIP_NONE:
+            { /* skip */
+            } break;
+        case CORE__INPUT_DEVICE_SET_MEMBERSHIP_PREV:
+            { /* the input device was just removed */
+              events->GamepadRemoveList[events->GamepadRemoveCount] = (DWORD)((DWORD_PTR) device_set.DeviceIds[i]);
+              events->GamepadRemoveCount++;
+            } break;
+        case CORE__INPUT_DEVICE_SET_MEMBERSHIP_CURR:
+            { /* the input device was just attached */
+              events->GamepadAttachList[events->GamepadAttachCount] = (DWORD)((DWORD_PTR) device_set.DeviceIds[i]);
+              events->GamepadAttachCount++;
+            } break;
+        default:
+            { /* the input device was present in both snapshots */
+              CORE_INPUT_GAMEPAD_EVENTS *input_ev = &events->GamepadDeviceEvents[events->GamepadDeviceCount];
+              CORE__INPUT_GAMEPAD_STATE *state_pp = CORE__GamepadDeviceListState(device_list_prev, device_set.PrevIndex[i]);
+              CORE__INPUT_GAMEPAD_STATE *state_cp = CORE__GamepadDeviceListState(device_list_curr, device_set.CurrIndex[i]);
+              events->GamepadDeviceIds[events->GamepadDeviceCount] = (DWORD)((DWORD_PTR) device_set.DeviceIds[i]);
+              CORE__GenerateGamepadInputEvents(input_ev, state_pp, state_cp);
+              events->GamepadDeviceCount++;
+            } break;
+        }
+    }
+}
+
+/* @summary Given two pointer state snapshots, generate events for keys down, pressed and released.
+ * @param events The keyboard events structure to populate.
+ * @param prev The state snapshot for the device from the previous update.
+ * @param curr The state snapshot for the device from the in-progress update.
+ */
+static void
+CORE__GeneratePointerInputEvents
+(
+    CORE_INPUT_POINTER_EVENTS     *events, 
+    CORE__INPUT_POINTER_STATE const *prev, 
+    CORE__INPUT_POINTER_STATE const *curr
+)
+{
+    uint32_t   max_events = events->MaxButtonEvents;
+    uint32_t   curr_state = curr->Buttons;
+    uint32_t   prev_state = prev->Buttons;
+    uint32_t      changes =(curr_state ^ prev_state);
+    uint32_t        downs =(changes    & curr_state);
+    uint32_t          ups =(changes    &~curr_state);
+    uint32_t        num_d = 0;
+    uint32_t        num_p = 0;
+    uint32_t        num_r = 0;
+    uint32_t         mask;
+    uint32_t       button;
+    uint32_t         i, j;
+
+    events->Cursor[0]  = curr->Pointer [0];
+    events->Cursor[1]  = curr->Pointer [1];
+    events->WheelDelta = curr->Relative[2];
+    if (curr->Flags & CORE__INPUT_POINTER_FLAG_ABSOLUTE)
+    {   /* calculate relative values as the delta between states */
+        events->Mickeys[0] = curr->Relative[0] - prev->Relative[0];
+        events->Mickeys[1] = curr->Relative[1] - prev->Relative[1];
+    }
+    else
+    {   /* the driver specified relative values - copy them as-is */
+        events->Mickeys[0] = curr->Relative[0];
+        events->Mickeys[1] = curr->Relative[1];
+    }
+    for (i = 0; i < 32; ++i)
+    {
+        mask    = 1UL << i;
+        button  = mask; /* MK_nBUTTON */
+
+        if (num_d < max_events && (curr_state & mask) != 0)
+        {   /* this button is currently pressed */
+            events->ButtonsDown[num_d++] = (uint16_t) button;
+        }
+        if (num_p < max_events && (downs & mask) != 0)
+        {   /* this button was just pressed */
+            events->ButtonsPressed[num_p++] = (uint16_t) button;
+        }
+        if (num_r < max_events && (ups & mask) != 0)
+        {   /* this button was just released */
+            events->ButtonsReleased[num_r++] = (uint16_t) button;
+        }
+    }
+    events->ButtonDownCount     = num_d;
+    events->ButtonPressedCount  = num_p;
+    events->ButtonReleasedCount = num_r;
+}
+
+/* @summary Build a device set and generate events related to device attachment and removal.
+ * @param events The CORE_INPUT_EVENTS to update.
+ * @param device_list_prev The pointer device list from the previous update.
+ * @param device_list_curr The pointer device list from the current update.
+ */
+static void
+CORE__GeneratePointerDeviceEvents
+(
+    CORE_INPUT_EVENTS                 *events, 
+    CORE__INPUT_DEVICE_LIST *device_list_prev, 
+    CORE__INPUT_DEVICE_LIST *device_list_curr
+)
+{
+    uint32_t                             i, n;
+    CORE__INPUT_DEVICE_SET         device_set;
+    CORE__DetermineInputDeviceSet(&device_set, device_list_prev, device_list_curr);
+    events->PointerAttachCount = 0;
+    events->PointerRemoveCount = 0;
+    events->PointerDeviceCount = 0;
+    for (i = 0, n = device_set.DeviceCount; i < n; ++i)
+    {
+        switch (device_set.Membership[i])
+        {
+        case CORE__INPUT_DEVICE_SET_MEMBERSHIP_NONE:
+            { /* skip */
+            } break;
+        case CORE__INPUT_DEVICE_SET_MEMBERSHIP_PREV:
+            { /* the input device was just removed */
+              events->PointerRemoveList[events->PointerRemoveCount] = device_set.DeviceIds[i];
+              events->PointerRemoveCount++;
+            } break;
+        case CORE__INPUT_DEVICE_SET_MEMBERSHIP_CURR:
+            { /* the input device was just attached */
+              events->PointerAttachList[events->PointerAttachCount] = device_set.DeviceIds[i];
+              events->PointerAttachCount++;
+            } break;
+        default:
+            { /* the input device was present in both snapshots */
+              CORE_INPUT_POINTER_EVENTS *input_ev = &events->PointerDeviceEvents[events->PointerDeviceCount];
+              CORE__INPUT_POINTER_STATE *state_pp = CORE__PointerDeviceListState(device_list_prev, device_set.PrevIndex[i]);
+              CORE__INPUT_POINTER_STATE *state_cp = CORE__PointerDeviceListState(device_list_curr, device_set.CurrIndex[i]);
+              events->PointerDeviceIds[events->PointerDeviceCount] = device_set.DeviceIds[i];
+              CORE__GeneratePointerInputEvents(input_ev, state_pp, state_cp);
+              events->PointerDeviceCount++;
+            } break;
+        }
+    }
+}
+
+/* @summary Copy pointer device information from the prior write buffer to the current write buffer.
+ * @param dst The CORE__INPUT_DEVICE_LIST representing the new write buffer.
+ * @param src The CORE__INPUT_DEVICE_LIST representing the previous write buffer.
+ */
+static void
+CORE__ForwardPointerDeviceList
+(
+    CORE__INPUT_DEVICE_LIST *dst, 
+    CORE__INPUT_DEVICE_LIST *src
+)
+{
+    uint32_t i, n;
+
+    if (dst != NULL && dst != src)
+    {
+        dst->DeviceCount = src->DeviceCount;
+        CopyMemory(dst->DeviceHandle, src->DeviceHandle, src->DeviceCount * sizeof(HANDLE));
+        CopyMemory(dst->DeviceState , src->DeviceState , src->DeviceCount * sizeof(CORE__INPUT_POINTER_STATE));
+        for (i = 0, n = src->DeviceCount; i < n; ++i)
+        {
+            CORE__INPUT_POINTER_STATE *dstate = CORE__PointerDeviceListState(dst, i);
+            dstate->Flags = CORE__INPUT_POINTER_FLAGS_NONE;
+            dstate->Relative[0] = 0;
+            dstate->Relative[1] = 0;
+        }
+    }
+}
+
+/* @summary Given two keyboard state snapshots, generate events for keys down, pressed and released.
+ * @param events The keyboard events structure to populate.
+ * @param prev The state snapshot for the device from the previous update.
+ * @param curr The state snapshot for the device from the in-progress update.
+ */
+static void
+CORE__GenerateKeyboardInputEvents
+(
+    CORE_INPUT_KEYBOARD_EVENTS     *events, 
+    CORE__INPUT_KEYBOARD_STATE const *prev, 
+    CORE__INPUT_KEYBOARD_STATE const *curr
+)
+{
+    uint32_t   max_events = events->MaxKeyEvents;
+    uint32_t        num_d = 0;
+    uint32_t        num_p = 0;
+    uint32_t        num_r = 0;
+    uint32_t   curr_state;
+    uint32_t   prev_state;
+    uint32_t      changes;
+    uint32_t        downs;
+    uint32_t          ups;
+    uint32_t         mask;
+    uint32_t         vkey;
+    uint32_t         i, j;
+
+    for (i = 0; i < 8; ++i)
+    {
+        curr_state = curr->KeyState[i];
+        prev_state = prev->KeyState[i];
+        changes    =(curr_state ^ prev_state);
+        downs      =(changes    & curr_state);
+        ups        =(changes    &~curr_state);
+        for (j = 0; j < 32; ++j)
+        {
+            mask = 1UL << j;
+            vkey =  (i << 5) + j;
+
+            if (num_d < max_events && (curr_state & mask) != 0)
+            {   /* this key is currently pressed */
+                events->KeysDown[num_d++] = (uint8_t) vkey;
+            }
+            if (num_p < max_events && (downs & mask) != 0)
+            {   /* this key was just pressed */
+                events->KeysPressed[num_p++] = (uint8_t) vkey;
+            }
+            if (num_r < max_events && (ups & mask) != 0)
+            {   /* this key was just released */
+                events->KeysReleased[num_r++] = (uint8_t) vkey;
+            }
+        }
+    }
+    events->KeyDownCount     = num_d;
+    events->KeyPressedCount  = num_p;
+    events->KeyReleasedCount = num_r;
+}
+
+/* @summary Build a device set and generate events related to device attachment and removal.
+ * @param events The CORE_INPUT_EVENTS to update.
+ * @param device_list_prev The keyboard device list from the previous update.
+ * @param device_list_curr The keyboard device list from the current update.
+ */
+static void
+CORE__GenerateKeyboardDeviceEvents
+(
+    CORE_INPUT_EVENTS                 *events, 
+    CORE__INPUT_DEVICE_LIST *device_list_prev, 
+    CORE__INPUT_DEVICE_LIST *device_list_curr
+)
+{
+    uint32_t                             i, n;
+    CORE__INPUT_DEVICE_SET         device_set;
+    CORE__DetermineInputDeviceSet(&device_set, device_list_prev, device_list_curr);
+    events->KeyboardAttachCount  = 0;
+    events->KeyboardRemoveCount  = 0;
+    events->KeyboardDeviceCount  = 0;
+    for (i = 0, n = device_set.DeviceCount; i < n; ++i)
+    {
+        switch (device_set.Membership[i])
+        {
+        case CORE__INPUT_DEVICE_SET_MEMBERSHIP_NONE:
+            { /* skip */
+            } break;
+        case CORE__INPUT_DEVICE_SET_MEMBERSHIP_PREV:
+            { /* the input device was just removed */
+              events->KeyboardRemoveList[events->KeyboardRemoveCount] = device_set.DeviceIds[i];
+              events->KeyboardRemoveCount++;
+            } break;
+        case CORE__INPUT_DEVICE_SET_MEMBERSHIP_CURR:
+            { /* the input device was just attached */
+              events->KeyboardAttachList[events->KeyboardAttachCount] = device_set.DeviceIds[i];
+              events->KeyboardAttachCount++;
+            } break;
+        default:
+            { /* the input device was present in both snapshots */
+              CORE_INPUT_KEYBOARD_EVENTS *input_ev = &events->KeyboardDeviceEvents[events->KeyboardDeviceCount];
+              CORE__INPUT_KEYBOARD_STATE *state_pp = CORE__KeyboardDeviceListState(device_list_prev, device_set.PrevIndex[i]);
+              CORE__INPUT_KEYBOARD_STATE *state_cp = CORE__KeyboardDeviceListState(device_list_curr, device_set.CurrIndex[i]);
+              events->KeyboardDeviceIds[events->KeyboardDeviceCount] = device_set.DeviceIds[i];
+              CORE__GenerateKeyboardInputEvents(input_ev, state_pp, state_cp);
+              events->KeyboardDeviceCount++;
+            } break;
+        }
+    }
+}
+
+/* @summary Copy keyboard device information from the prior write buffer to the current write buffer.
+ * @param dst The CORE__INPUT_DEVICE_LIST representing the new write buffer.
+ * @param src The CORE__INPUT_DEVICE_LIST representing the previous write buffer.
+ */
+static void
+CORE__ForwardKeyboardDeviceList
+(
+    CORE__INPUT_DEVICE_LIST *dst, 
+    CORE__INPUT_DEVICE_LIST *src
+)
+{
+    if (dst != NULL && dst != src)
+    {
+        dst->DeviceCount = src->DeviceCount;
+        CopyMemory(dst->DeviceHandle, src->DeviceHandle, src->DeviceCount * sizeof(HANDLE));
+        CopyMemory(dst->DeviceState , src->DeviceState , src->DeviceCount * sizeof(CORE__INPUT_KEYBOARD_STATE));
+    }
+}
+#endif
 
 /* @summary Convert from physical to logical pixels.
  * @param dimension The value to convert, specified in physical pixels.
@@ -241,7 +1534,7 @@ PAL_EnumerateDisplays
         info                  = &wsi->ActiveDisplays[display_count++];
         info->DisplayOrdinal  = ordinal;
         info->MonitorHandle   = MonitorFromRect(&monitor_bounds, MONITOR_DEFAULTTONEAREST);
-        GetDpiForMonitor_Fn(info->MonitorHandle, MDT_EFFECTIVE_DPI, &info->DisplayDpiX, &info->DisplayDpiY);
+        wsi->Win32Runtime.GetDpiForMonitor(info->MonitorHandle, MDT_EFFECTIVE_DPI, &info->DisplayDpiX, &info->DisplayDpiY);
         CopyMemory(&info->DisplayMode, &dm, dm.dmSize);
         CopyMemory(&info->DisplayInfo, &dd, dd.cb);
         if (dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) {
@@ -740,13 +2033,14 @@ PAL_WndProc_WSI_WM_CREATE
     LPARAM                lparam
 )
 {
-    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-    DWORD      style =(DWORD)GetWindowLong(hwnd, GWL_STYLE);
-    UINT       dpi_x = 0;
-    UINT       dpi_y = 0;
-    RECT          rc;
+    PAL_WINDOW_SYSTEM *wsi = data->WindowSystem;
+    HMONITOR       monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    DWORD            style =(DWORD)GetWindowLong(hwnd, GWL_STYLE);
+    UINT             dpi_x = 0;
+    UINT             dpi_y = 0;
+    RECT                rc;
 
-    GetDpiForMonitor_Fn(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y);
+    wsi->Win32Runtime.GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y);
 
     if (data->DisplayHandle != monitor)
     {   /* save the update monitor attributes */
@@ -953,11 +2247,12 @@ PAL_WndProc_WSI_WM_MOVE
     LPARAM                lparam
 )
 {
-    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-    UINT       dpi_x = 0;
-    UINT       dpi_y = 0;
+    PAL_WINDOW_SYSTEM *wsi = data->WindowSystem;
+    HMONITOR       monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    UINT             dpi_x = 0;
+    UINT             dpi_y = 0;
 
-    GetDpiForMonitor_Fn(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y);
+    wsi->Win32Runtime.GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y);
 
     if (data->DisplayHandle != monitor)
     {   /* save the update monitor attributes */
@@ -997,11 +2292,12 @@ PAL_WndProc_WSI_WM_SIZE
     LPARAM                lparam
 )
 {
-    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-    UINT       dpi_x = 0;
-    UINT       dpi_y = 0;
+    PAL_WINDOW_SYSTEM *wsi = data->WindowSystem;
+    HMONITOR       monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    UINT             dpi_x = 0;
+    UINT             dpi_y = 0;
 
-    GetDpiForMonitor_Fn(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y);
+    wsi->Win32Runtime.GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y);
 
     if (data->DisplayHandle != monitor)
     {   /* save the update monitor attributes */
@@ -1043,11 +2339,12 @@ PAL_WndProc_WSI_WM_SHOWWINDOW
 {
     if (wparam)
     {   /* the window is being shown */
-        HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        UINT       dpi_x = 0;
-        UINT       dpi_y = 0;
+        PAL_WINDOW_SYSTEM *wsi = data->WindowSystem;
+        HMONITOR       monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        UINT             dpi_x = 0;
+        UINT             dpi_y = 0;
 
-        GetDpiForMonitor_Fn(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y);
+        wsi->Win32Runtime.GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y);
 
         if (data->DisplayHandle != monitor)
         {   /* save the update monitor attributes */
@@ -1093,11 +2390,12 @@ PAL_WndProc_WSI_WM_DISPLAYCHANGE
 )
 {   /* wparam is the bit depth of the display */
     /* lparam low word is the display width, high word is the height */
-    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-    UINT       dpi_x = 0;
-    UINT       dpi_y = 0;
+    PAL_WINDOW_SYSTEM *wsi = data->WindowSystem;
+    HMONITOR       monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    UINT             dpi_x = 0;
+    UINT             dpi_y = 0;
 
-    GetDpiForMonitor_Fn(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y);
+    wsi->Win32Runtime.GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y);
 
     if (data->DisplayHandle != monitor)
     {   /* save the update monitor attributes */
@@ -1299,44 +2597,69 @@ PAL_WindowSystemCreate
     void
 )
 {
-    DEV_BROADCAST_DEVICEINTERFACE dnf;
-    PAL_MEMORY_ARENA            arena;
-    PAL_MEMORY_ARENA_INIT  arena_init;
-    PAL_MEMORY_LAYOUT    table_layout;
-    SYSTEM_INFO               sysinfo;
-    MONITORINFO               moninfo;
-    WNDCLASSEX               wndclass;
-    POINT                          pt;
-    RECT                           rc;
-    WCHAR const           *class_name =L"PAL__NotifyClass";
-    HINSTANCE                  module =(HINSTANCE) GetModuleHandleW(NULL);
-    HMODULE                    shcore = NULL;
-    HMONITOR                  monitor = NULL;
-    HDEVNOTIFY             notify_dev = NULL;
-    HWND                   notify_wnd = NULL;
-    PAL_WINDOW_SYSTEM            *wsi = NULL;
-    pal_uint8_t            *base_addr = NULL;
-    pal_usize_t         required_size = 0;
-    pal_uint32_t const   MAX_DISPLAYS = 64;
-    DWORD                  error_code = ERROR_SUCCESS;
-    DWORD                       style = WS_POPUP;
-    DWORD                    style_ex = WS_EX_NOACTIVATE;// | WS_EX_NOREDIRECTIONBITMAP;
+    DEV_BROADCAST_DEVICEINTERFACE   dnf;
+    PAL_WSI_WIN32_DISPATCH   win32_disp;
+    PAL_WSI_XINPUT_DISPATCH xinput_disp;
+    PAL_MEMORY_ARENA              arena;
+    PAL_MEMORY_ARENA_INIT    arena_init;
+    PAL_MEMORY_LAYOUT      table_layout;
+    PAL_MODULE                   shcore;
+    PAL_MODULE                   xinput;
+    SYSTEM_INFO                 sysinfo;
+    MONITORINFO                 moninfo;
+    WNDCLASSEX                 wndclass;
+    POINT                            pt;
+    RECT                             rc;
+    WCHAR const             *class_name =L"PAL__NotifyClass";
+    HINSTANCE                    module =(HINSTANCE) GetModuleHandleW(NULL);
+    HMONITOR                    monitor = NULL;
+    HDEVNOTIFY               notify_dev = NULL;
+    HWND                     notify_wnd = NULL;
+    PAL_WINDOW_SYSTEM              *wsi = NULL;
+    pal_uint8_t              *base_addr = NULL;
+    pal_usize_t           required_size = 0;
+    pal_uint32_t const     MAX_DISPLAYS = 64;
+    DWORD                    error_code = ERROR_SUCCESS;
+    DWORD                         style = WS_POPUP;
+    DWORD                      style_ex = WS_EX_NOACTIVATE;// | WS_EX_NOREDIRECTIONBITMAP;
 
-    /* dynamically resolve Windows API entry points from Shcore.dll */
-    if ((shcore = LoadLibraryW(L"Shcore.dll")) == NULL) {
-        SetProcessDpiAwareness_Fn = SetProcessDpiAwareness_Stub;
-        GetDpiForMonitor_Fn       = GetDpiForMonitor_Stub;
-    } else {
-        if((SetProcessDpiAwareness_Fn =(SetProcessDpiAwareness_Func) GetProcAddress(shcore, "SetProcessDpiAwareness")) == NULL) {
-            SetProcessDpiAwareness_Fn = SetProcessDpiAwareness_Stub;
-        }
-        if((GetDpiForMonitor_Fn =(GetDpiForMonitor_Func) GetProcAddress(shcore, "GetDpiForMonitor")) == NULL) {
-            GetDpiForMonitor_Fn = GetDpiForMonitor_Stub;
-        }
+    /* dynamically resolve entry points */
+    PAL_ZeroMemory(&win32_disp , sizeof(PAL_WSI_WIN32_DISPATCH));
+    PAL_ZeroMemory(&xinput_disp, sizeof(PAL_WSI_XINPUT_DISPATCH));
+
+    if (PAL_ModuleLoad(&shcore, "Shcore.dll") == 0) {      /* shipped with Win8.1+ */
+        PAL_RuntimeFunctionResolve(&win32_disp, &shcore, SetProcessDpiAwareness);
+        PAL_RuntimeFunctionResolve(&win32_disp, &shcore, GetDpiForMonitor);
+        win32_disp.ShcoreModule   = shcore;
+    } else { /* no Shcore available on host */
+        PAL_RuntimeFunctionSetStub(&win32_disp, SetProcessDpiAwareness);
+        PAL_RuntimeFunctionSetStub(&win32_disp, GetDpiForMonitor);
+    }
+
+    if (PAL_ModuleLoad(&xinput, "xinput1_4.dll"  ) == 0 || /* shipped with Win8+ */
+        PAL_ModuleLoad(&xinput, "xinput9_1_0.dll") == 0 || /* shipped with Vista */
+        PAL_ModuleLoad(&xinput, "xinput1_3.dll"  )) {      /* shipped with June 2010 DirectX SDK */
+        PAL_RuntimeFunctionResolve(&xinput_disp, &xinput, XInputEnable);
+        PAL_RuntimeFunctionResolve(&xinput_disp, &xinput, XInputGetState);
+        PAL_RuntimeFunctionResolve(&xinput_disp, &xinput, XInputSetState);
+        PAL_RuntimeFunctionResolve(&xinput_disp, &xinput, XInputGetKeystroke);
+        PAL_RuntimeFunctionResolve(&xinput_disp, &xinput, XInputGetCapabilities);
+        PAL_RuntimeFunctionResolve(&xinput_disp, &xinput, XInputGetBatteryInformation);
+        PAL_RuntimeFunctionResolve(&xinput_disp, &xinput, XInputGetAudioDeviceIds);
+        xinput_disp.XInputModule  = xinput;
+    } else { /* no XInput available on host */
+        PAL_RuntimeFunctionSetStub(&xinput_disp, XInputEnable);
+        PAL_RuntimeFunctionSetStub(&xinput_disp, XInputGetState);
+        PAL_RuntimeFunctionSetStub(&xinput_disp, XInputSetState);
+        PAL_RuntimeFunctionSetStub(&xinput_disp, XInputGetKeystroke);
+        PAL_RuntimeFunctionSetStub(&xinput_disp, XInputGetCapabilities);
+        PAL_RuntimeFunctionSetStub(&xinput_disp, XInputGetBatteryInformation);
+        PAL_RuntimeFunctionSetStub(&xinput_disp, XInputGetAudioDeviceIds);
     }
     /* ... */
 
-    SetProcessDpiAwareness_Fn(PROCESS_PER_MONITOR_DPI_AWARE);
+    /* SetProcessDpiAwareness must be called prior to calling any APIs that depend on DPI awareness */
+    win32_disp.SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
 
     /* retrieve the OS page size and determine the amount of memory required */
     GetNativeSystemInfo(&sysinfo);
@@ -1368,10 +2691,18 @@ PAL_WindowSystemCreate
     wsi->ActiveDisplays    = PAL_MemoryArenaAllocateHostArray(&arena, PAL_DISPLAY_DATA, MAX_DISPLAYS);
     wsi->NotifyWindow      = NULL;
     wsi->DeviceNotify      = NULL;
-    wsi->ShcoreDll         = shcore;
     wsi->DisplayCount      = 0;
     wsi->DisplayCapacity   = MAX_DISPLAYS;
     wsi->DisplayEventFlags = PAL_DISPLAY_EVENT_FLAGS_NONE;
+    /* ... */
+
+    /* copy over the dispatch tables */
+    PAL_CopyMemory(&wsi->Win32Runtime , &win32_disp , sizeof(PAL_WSI_WIN32_DISPATCH));
+    PAL_CopyMemory(&wsi->XInputRuntime, &xinput_disp, sizeof(PAL_WSI_XINPUT_DISPATCH));
+    
+    /* enumerate displays attached to the system. 
+     * this populates the ActiveDisplays array and sets DisplayCount.
+     */
     PAL_EnumerateDisplays(wsi);
 
     /* initialize the handle table for window objects */
@@ -1381,12 +2712,14 @@ PAL_WindowSystemCreate
         goto cleanup_and_fail;
     }
 
-    /* create a hidden window to handle all system notifications */
+    /* create a hidden window to handle all system notifications 
+     * and receive input device events for the application.
+     */
     if (!GetClassInfoEx(module , class_name, &wndclass)) {
         wndclass.cbSize        = sizeof(WNDCLASSEX);
         wndclass.cbClsExtra    = 0;
         wndclass.cbWndExtra    = sizeof(PAL_WINDOW_SYSTEM*);
-        wndclass.hInstance     = module;
+        wndclass.hInstance     = GetModuleHandle(NULL);
         wndclass.lpszClassName = class_name;
         wndclass.lpszMenuName  = NULL;
         wndclass.lpfnWndProc   = PAL_WndProc_Notify;
@@ -1401,6 +2734,8 @@ PAL_WindowSystemCreate
         }
     }
 
+    /* the notification window is positioned on the main display and covers the work area.
+     */
     pt.x = pt.y = 0;
     moninfo.cbSize = sizeof(MONITORINFO);
     monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
@@ -1434,9 +2769,8 @@ cleanup_and_fail:
     if (base_addr) {
         VirtualFree(base_addr, 0, MEM_RELEASE);
     }
-    if (shcore) {
-        FreeLibrary(shcore);
-    }
+    PAL_ModuleUnload(&xinput);
+    PAL_ModuleUnload(&shcore);
     return NULL;
 }
 
@@ -1473,10 +2807,9 @@ PAL_WindowSystemDelete
                 }
             }
         }
-        /* unload Shcore.dll from the process */
-        if (wsi->ShcoreDll) {
-            FreeLibrary(wsi->ShcoreDll);
-        }
+        /* unload manually-loaded DLLs from the process */
+        PAL_ModuleUnload(&wsi->XInputRuntime.XInputModule);
+        PAL_ModuleUnload(&wsi->Win32Runtime.ShcoreModule);
         /* free the WSI memory block */
         VirtualFree(wsi, 0, MEM_RELEASE);
     }
