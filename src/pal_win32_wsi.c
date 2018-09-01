@@ -72,7 +72,7 @@
 /** PAL_WINDOW_SYSTEM::WindowTable **/
 #   define PAL_WSS_WINDOW_DATA           0
 /** PAL_WINDOW_SYSTEM::InputTable **/
-#   define PAL_WSI_INPUT_DATA            0
+#   define PAL_WSS_INPUT_DEVICE_DATA     0
 #endif
 
 /* @summary Helper macro to retrieve a pointer to the start of a device state structure.
@@ -253,9 +253,9 @@ typedef struct PAL_WSI_INPUT_DEVICE_STATE {
     pal_uint64_t                           LastUpdateTime;                     /* The timestamp, in ticks, at which this state data was last written. */
     pal_uint32_t                           GamepadPorts;                       /* A bit vector where a bit is set if the corresponding gamepad was connected. */
     pal_uint32_t                           Reserved;                           /* Reserved for future use. Set to zero. */
-    PAL_WSI_INPUT_DEVICE_LIST              GamepadDeviceList;                  /* The list of gamepad devices attached to the system, including the observed state of each device. */
-    PAL_WSI_INPUT_DEVICE_LIST              PointerDeviceList;                  /* The list of pointer devices attached to the system, including the observed state of each device. */
-    PAL_WSI_INPUT_DEVICE_LIST              KeyboardDeviceList;                 /* The list of keyboard devices attached to the system, including the observed state of each device. */
+    PAL_WSI_INPUT_DEVICE_LIST             *GamepadDeviceList;                  /* The list of gamepad devices attached to the system, including the observed state of each device. */
+    PAL_WSI_INPUT_DEVICE_LIST             *PointerDeviceList;                  /* The list of pointer devices attached to the system, including the observed state of each device. */
+    PAL_WSI_INPUT_DEVICE_LIST             *KeyboardDeviceList;                 /* The list of keyboard devices attached to the system, including the observed state of each device. */
 } PAL_WSI_INPUT_DEVICE_STATE;
 
 /* @summary Define the data associated with a PAL_INPUT handle. 
@@ -269,10 +269,6 @@ typedef struct PAL_INPUT_DEVICE_DATA {
 
 /* @summary Define the data associated with the host operating system window manager.
  * The window system interface is responsible for tracking active application windows and processing user input.
- * Swap the read and write buffers for the PAL_INPUT.
- * Copy LatestState into the current read buffer for the PAL_INPUT.
- * Update LatestState based on messages to NotifyWindow.
- * Copy LatestState into the current write buffer for the PAL_INPUT. 
  */
 typedef struct PAL_WINDOW_SYSTEM {
     HWND                                   NotifyWindow;                       /* An invisible window used for receiving system and device change notifications. */
@@ -1046,6 +1042,81 @@ PAL_PollXInputGamepads
     }
    *ports_out = outbits;
     return count;
+}
+
+/* @summary Create a new PAL_INPUT_OBJECT.
+ * @param obj The PAL_INPUT_OBJECT to populate.
+ * @param wsi The PAL_WINDOW_SYSTEM managing the input object.
+ * @return Zero if the object is created successfully, or non-zero if an error occurred.
+ */
+static int
+PAL_InputObjectCreate
+(
+    struct PAL_INPUT_OBJECT  *obj, 
+    struct PAL_WINDOW_SYSTEM *wsi
+)
+{
+    PAL_INPUT              handle = PAL_HANDLE_INVALID;
+    PAL_HANDLE_TABLE_CHUNK chunk;
+    PAL_MEMORY_VIEW         view;
+    pal_uint32_t           index;
+
+    if (PAL_HandleTableCreateIds(&wsi->InputTable, &handle, 1) != 0) {
+        goto error_exit;
+    }
+    if (PAL_HandleTableGetChunkForHandle(&wsi->InputTable, &chunk, handle, &index, &view) == NULL) {
+        goto error_exit;
+    }
+    obj->Handle     = handle;
+    obj->DeviceData = PAL_MemoryViewStreamAt(PAL_INPUT_DEVICE_DATA, &view, PAL_WSS_INPUT_DEVICE_DATA, index);
+    return  0;
+
+error_exit:
+    obj->Handle     = PAL_HANDLE_INVALID;
+    obj->DeviceData = NULL;
+    return -1;
+}
+
+/* @summary Resolve a PAL_INPUT handle into a PAL_INPUT_OBJECT instance.
+ * @param obj The PAL_INPUT_OBJECT to populate with data for the object.
+ * @param wsi The PAL_WINDOW_SYSTEM managing the PAL_INPUT object.
+ * @param handle The handle to resolve.
+ * @return Zero if the object is successfully resolved, or non-zero if the handle was invalid.
+ */
+static PAL_INLINE int
+PAL_InputObjectResolve
+(
+    struct PAL_INPUT_OBJECT  *obj, 
+    struct PAL_WINDOW_SYSTEM *wsi, 
+    PAL_INPUT              handle
+)
+{
+    PAL_HANDLE_TABLE_CHUNK chunk;
+    PAL_MEMORY_VIEW         view;
+    pal_uint32_t           index;
+    if (PAL_HandleTableGetChunkForHandle(&wsi->InputTable, &chunk, handle, &index, &view) != NULL) {
+        obj->Handle     = handle;
+        obj->DeviceData = PAL_MemoryViewStreamAt(PAL_INPUT_DEVICE_DATA, &view, PAL_WSS_INPUT_DEVICE_DATA, index);
+        return  0;
+    } else {
+        obj->Handle     = PAL_HANDLE_INVALID;
+        obj->DeviceData = NULL;
+        return -1;
+    }
+}
+
+/* @summary Free resources associated with a PAL_INPUT object and invalidate the handle.
+ * @param wsi The PAL_WINDOW_SYSTEM managing the input object.
+ * @param handle The handle of the object to delete.
+ */
+static void
+PAL_InputObjectDelete
+(
+    struct PAL_WINDOW_SYSTEM *wsi, 
+    PAL_INPUT              handle
+)
+{
+    PAL_HandleTableDeleteIds(&wsi->InputTable, &handle, 1);
 }
 
 #if 0
@@ -2591,10 +2662,199 @@ PAL_WndProc_WSI
     return result;
 }
 
+/* @summary Determine the amount of memory required for an input device list.
+ * @param max_devices The maximum number of devices of the given type that can be seen by the application at any given time.
+ * @param object_size The size of the state data structure type, for example PAL_WSI_KEYBOARD_STATE.
+ * @param object_align The required alignment of the state data structure type, for example PAL_WSI_KEYBOARD_STATE.
+ * @return The number of bytes required to allocate and initialize an input device list for the given device type.
+ */
+static pal_uint32_t
+PAL_InputDeviceListQueryMemorySize
+(
+    pal_uint32_t  max_devices, 
+    pal_uint32_t  object_size, 
+    pal_uint32_t object_align
+)
+{
+    pal_uint32_t required_size = 0;
+    required_size += sizeof(PAL_WSI_INPUT_DEVICE_LIST);
+    required_size += PAL_AllocationSizeArray   (HANDLE     , max_devices);
+    required_size += PAL_AllocationSizeArrayRaw(object_size, object_align, max_devices);
+    return required_size;
+}
+
+/* @summary Determine the amount of memory required for an input device list of gamepad devices.
+ * @param max_devices The maximum number of gamepad devices that can be seen by the application at any given time.
+ * @return The number of bytes required to allocate and initialize an input device list.
+ */
+static PAL_INLINE pal_uint32_t
+PAL_InputDeviceListQueryMemorySize_Gamepad
+(
+    pal_uint32_t max_devices
+)
+{
+    pal_uint32_t s = PAL_SizeOf (PAL_WSI_GAMEPAD_STATE);
+    pal_uint32_t a = PAL_AlignOf(PAL_WSI_GAMEPAD_STATE);
+    return PAL_InputDeviceListQueryMemorySize(max_devices, s, a);
+}
+
+/* @summary Determine the amount of memory required for an input device list of pointer devices.
+ * @param max_devices The maximum number of pointer devices that can be seen by the application at any given time.
+ * @return The number of bytes required to allocate and initialize an input device list.
+ */
+static PAL_INLINE pal_uint32_t
+PAL_InputDeviceListQueryMemorySize_Pointer
+(
+    pal_uint32_t max_devices
+)
+{
+    pal_uint32_t s = PAL_SizeOf (PAL_WSI_POINTER_STATE);
+    pal_uint32_t a = PAL_AlignOf(PAL_WSI_POINTER_STATE);
+    return PAL_InputDeviceListQueryMemorySize(max_devices, s, a);
+}
+
+/* @summary Determine the amount of memory required for an input device list of keyboard devices.
+ * @param max_devices The maximum number of keyboard devices that can be seen by the application at any given time.
+ * @return The number of bytes required to allocate and initialize an input device list.
+ */
+static pal_uint32_t
+PAL_InputDeviceListQueryMemorySize_Keyboard
+(
+    pal_uint32_t max_devices
+)
+{
+    pal_uint32_t s = PAL_SizeOf (PAL_WSI_KEYBOARD_STATE);
+    pal_uint32_t a = PAL_AlignOf(PAL_WSI_KEYBOARD_STATE);
+    return PAL_InputDeviceListQueryMemorySize(max_devices, s, a);
+}
+
+/* @summary Allocate and initialize an input device state list.
+ * @param arena The memory arena from which the device list storage will be allocated.
+ * @param max_devices The maximum number of devices of the given type that can be seen by the application at any given time.
+ * @param object_size The size of the state data structure type, for example PAL_WSI_KEYBOARD_STATE.
+ * @param object_align The required alignment of the state data structure type, for example PAL_WSI_KEYBOARD_STATE.
+ * @param list_size On return, this location is updated with the number of bytes allocated to store the list data.
+ * @return A pointer to the input device list, or NULL.
+ */
+static struct PAL_WSI_INPUT_DEVICE_LIST*
+PAL_InputDeviceListCreate
+(
+    struct PAL_MEMORY_ARENA *arena, 
+    pal_uint32_t       max_devices, 
+    pal_uint32_t       object_size, 
+    pal_uint32_t      object_align, 
+    pal_uint32_t        *list_size
+)
+{
+    HANDLE                 *handles = NULL;
+    pal_uint8_t              *state = NULL;
+    PAL_WSI_INPUT_DEVICE_LIST *list = NULL;
+    PAL_MEMORY_ARENA_MARKER  base_m;
+    PAL_MEMORY_ARENA_MARKER  data_s;
+    PAL_MEMORY_ARENA_MARKER  data_e;
+    pal_uint32_t             size_l;
+
+    /* memory layout is: 
+     * [PAL_WSI_INPUT_DEVICE_LIST]
+     * <=== StateBase points here
+     * [HANDLE DeviceHandle] <== An array of max_devices HANDLE values
+     * [void*  DeviceState ] <== An array of max_devices objects (PAL_WSI_KEYBOARD_STATE, etc.)
+     */
+    base_m = PAL_MemoryArenaMark(arena);
+    if ((list = PAL_MemoryArenaAllocateHostType(arena, PAL_WSI_INPUT_DEVICE_LIST)) == NULL) {
+        goto cleanup_and_fail;
+    }
+
+    if (max_devices > 0) {
+        data_s = PAL_MemoryArenaMark(arena);
+        if ((handles = PAL_MemoryArenaAllocateHostArray(arena, HANDLE, max_devices)) == NULL) {
+            goto cleanup_and_fail;
+        }
+        if ((state = PAL_MemoryArenaAllocateHostArrayRaw(arena, object_size, object_align, max_devices)) == NULL) {
+            goto cleanup_and_fail;
+        }
+        data_e = PAL_MemoryArenaMark(arena);
+        size_l = PAL_MemoryArenaMarkerDifference32(data_s, data_e);
+    } else { /* zero-size device list */
+        state  = NULL;
+        handles= NULL;
+        size_l = 0;
+    }
+
+    list->StateBase     =(pal_uint8_t*) handles;
+    list->MaxDevices    = max_devices;
+    list->DeviceCount   = 0;
+    list->DeviceHandle  = handles;
+    list->DeviceState   = state;
+    PAL_Assign(list_size, size_l);
+    return list;
+
+cleanup_and_fail:
+    PAL_MemoryArenaResetToMarker(arena, base_m);
+    return NULL;
+}
+
+/* @summary Allocate and initialize an input device state list for gamepad devices.
+ * @param arena The memory arena from which the device list storage will be allocated.
+ * @param max_devices The maximum number of gamepad devices that can be seen by the application at any given time.
+ * @param list_size On return, this location is updated with the number of bytes allocated to store the list data.
+ * @return A pointer to the input device list, or NULL.
+ */
+static PAL_INLINE struct PAL_WSI_INPUT_DEVICE_LIST*
+PAL_InputDeviceListCreate_Gamepad
+(
+    struct PAL_MEMORY_ARENA *arena, 
+    pal_uint32_t       max_devices, 
+    pal_uint32_t        *list_size
+)
+{
+    pal_uint32_t s = PAL_SizeOf (PAL_WSI_GAMEPAD_STATE);
+    pal_uint32_t a = PAL_AlignOf(PAL_WSI_GAMEPAD_STATE);
+    return PAL_InputDeviceListCreate(arena, max_devices, s, a, list_size);
+}
+
+/* @summary Allocate and initialize an input device state list for pointer devices.
+ * @param arena The memory arena from which the device list storage will be allocated.
+ * @param max_devices The maximum number of pointer devices that can be seen by the application at any given time.
+ * @param list_size On return, this location is updated with the number of bytes allocated to store the list data.
+ * @return A pointer to the input device list, or NULL.
+ */
+static PAL_INLINE struct PAL_WSI_INPUT_DEVICE_LIST*
+PAL_InputDeviceListCreate_Pointer
+(
+    struct PAL_MEMORY_ARENA *arena, 
+    pal_uint32_t       max_devices, 
+    pal_uint32_t        *list_size
+)
+{
+    pal_uint32_t s = PAL_SizeOf (PAL_WSI_POINTER_STATE);
+    pal_uint32_t a = PAL_AlignOf(PAL_WSI_POINTER_STATE);
+    return PAL_InputDeviceListCreate(arena, max_devices, s, a, list_size);
+}
+
+/* @summary Allocate and initialize an input device state list for keyboard devices.
+ * @param arena The memory arena from which the device list storage will be allocated.
+ * @param max_devices The maximum number of keyboard devices that can be seen by the application at any given time.
+ * @param list_size On return, this location is updated with the number of bytes allocated to store the list data.
+ * @return A pointer to the input device list, or NULL.
+ */
+static PAL_INLINE struct PAL_WSI_INPUT_DEVICE_LIST*
+PAL_InputDeviceListCreate_Keyboard
+(
+    struct PAL_MEMORY_ARENA *arena, 
+    pal_uint32_t       max_devices, 
+    pal_uint32_t        *list_size
+)
+{
+    pal_uint32_t s = PAL_SizeOf (PAL_WSI_KEYBOARD_STATE);
+    pal_uint32_t a = PAL_AlignOf(PAL_WSI_KEYBOARD_STATE);
+    return PAL_InputDeviceListCreate(arena, max_devices, s, a, list_size);
+}
+
 PAL_API(struct PAL_WINDOW_SYSTEM*)
 PAL_WindowSystemCreate
 (
-    void
+    struct PAL_WINDOW_SYSTEM_INIT *init
 )
 {
     DEV_BROADCAST_DEVICEINTERFACE   dnf;
@@ -2622,6 +2882,19 @@ PAL_WindowSystemCreate
     DWORD                    error_code = ERROR_SUCCESS;
     DWORD                         style = WS_POPUP;
     DWORD                      style_ex = WS_EX_NOACTIVATE;// | WS_EX_NOREDIRECTIONBITMAP;
+
+    if (init->MaxGamepadDevices > PAL_WSI_MAX_INPUT_DEVICES) {
+        assert(init->MaxGamepadDevices <= PAL_WSI_MAX_INPUT_DEVICES);
+        return -1;
+    }
+    if (init->MaxPointerDevices > PAL_WSI_MAX_INPUT_DEVICES) {
+        assert(init->MaxPointerDevices <= PAL_WSI_MAX_INPUT_DEVICES);
+        return -1;
+    }
+    if (init->MaxKeyboardDevices > PAL_WSI_MAX_INPUT_DEVICES) {
+        assert(init->MaxKeyboardDevices <= PAL_WSI_MAX_INPUT_DEVICES);
+        return -1;
+    }
 
     /* dynamically resolve entry points */
     PAL_ZeroMemory(&win32_disp , sizeof(PAL_WSI_WIN32_DISPATCH));
@@ -2665,7 +2938,9 @@ PAL_WindowSystemCreate
     GetNativeSystemInfo(&sysinfo);
     required_size  = PAL_AllocationSizeType (PAL_WINDOW_SYSTEM);
     required_size += PAL_AllocationSizeArray(PAL_DISPLAY_DATA, MAX_DISPLAYS);
-    /* ... */
+    required_size += PAL_InputDeviceListQueryMemorySize_Gamepad (init->MaxGamepadDevices);
+    required_size += PAL_InputDeviceListQueryMemorySize_Pointer (init->MaxPointerDevices);
+    required_size += PAL_InputDeviceListQueryMemorySize_Keyboard(init->MaxKeyboardDevices);
     required_size  = PAL_AlignUp(required_size, sysinfo.dwPageSize);
 
     /* allocate memory for the window system data */
@@ -2687,16 +2962,32 @@ PAL_WindowSystemCreate
     }
 
     /* initialize the window system data */
-    wsi                    = PAL_MemoryArenaAllocateHostType (&arena, PAL_WINDOW_SYSTEM);
-    wsi->ActiveDisplays    = PAL_MemoryArenaAllocateHostArray(&arena, PAL_DISPLAY_DATA, MAX_DISPLAYS);
-    wsi->NotifyWindow      = NULL;
-    wsi->DeviceNotify      = NULL;
-    wsi->DisplayCount      = 0;
-    wsi->DisplayCapacity   = MAX_DISPLAYS;
-    wsi->DisplayEventFlags = PAL_DISPLAY_EVENT_FLAGS_NONE;
-    /* ... */
+    wsi                     = PAL_MemoryArenaAllocateHostType (&arena, PAL_WINDOW_SYSTEM);
+    wsi->ActiveDisplays     = PAL_MemoryArenaAllocateHostArray(&arena, PAL_DISPLAY_DATA, MAX_DISPLAYS);
+    wsi->NotifyWindow       = NULL;
+    wsi->DisplayCount       = 0;
+    wsi->DisplayCapacity    = MAX_DISPLAYS;
+    wsi->DisplayEventFlags  = PAL_DISPLAY_EVENT_FLAGS_NONE;
+    wsi->Reserved           = 0;
+    wsi->MaxGamepadDevices  = init->MaxGamepadDevices;
+    wsi->MaxPointerDevices  = init->MaxPointerDevices;
+    wsi->MaxKeyboardDevices = init->MaxKeyboardDevices;
+    wsi->GamepadListSize    = 0;
+    wsi->PointerListSize    = 0;
+    wsi->KeyboardListSize   = 0;
+    wsi->LastUpdateTime     = 0;
+    wsi->LastGamepadPoll    = 0;
+    wsi->DeviceNotify       = NULL;
 
-    /* copy over the dispatch tables */
+    InitializeSRWLock(&wsi->InputUpdateLock);
+    wsi->LatestState.LastUpdateTime      = 0;
+    wsi->LatestState.GamepadPorts        = 0;
+    wsi->LatestState.Reserved            = 0;
+    wsi->LatestState.GamepadDeviceList   = PAL_InputDeviceListCreate_Gamepad (&arena, init->MaxGamepadDevices , &wsi->GamepadListSize);
+    wsi->LatestState.PointerDeviceList   = PAL_InputDeviceListCreate_Pointer (&arena, init->MaxPointerDevices , &wsi->PointerListSize);
+    wsi->LatestState.KeyboardDeviceList  = PAL_InputDeviceListCreate_Keyboard(&arena, init->MaxKeyboardDevices, &wsi->KeyboardListSize);
+
+    /* copy over the dispatch tables before creating any windows */
     PAL_CopyMemory(&wsi->Win32Runtime , &win32_disp , sizeof(PAL_WSI_WIN32_DISPATCH));
     PAL_CopyMemory(&wsi->XInputRuntime, &xinput_disp, sizeof(PAL_WSI_XINPUT_DISPATCH));
     
@@ -2704,6 +2995,13 @@ PAL_WindowSystemCreate
      * this populates the ActiveDisplays array and sets DisplayCount.
      */
     PAL_EnumerateDisplays(wsi);
+
+    /* initialize the handle table for input objects */
+    PAL_MemoryLayoutInit(&table_layout);
+    PAL_MemoryLayoutAdd (&table_layout, PAL_INPUT_DEVICE_DATA);
+    if (PAL_HandleTypeDefine(&wsi->InputTable, &table_layout, 8, PAL_WINDOW_SYSTEM_NAMESPACE_INPUT) != 0) {
+        goto cleanup_and_fail;
+    }
 
     /* initialize the handle table for window objects */
     PAL_MemoryLayoutInit(&table_layout);
@@ -2745,7 +3043,10 @@ PAL_WindowSystemCreate
         goto cleanup_and_fail;
     }
 
-    /* register the window to receive notifications when devices are attached or removed */
+    /* register the window to receive notifications when devices are attached or removed.
+     * this same method could be used to receive notifications about input devices, but we'll use RawInput instead.
+     * the device broadcast notification is used to detect attach/remove of displays and GPUs.
+     */
     ZeroMemory(&dnf, sizeof(DEV_BROADCAST_DEVICEINTERFACE));
     dnf.dbcc_size  = sizeof(DEV_BROADCAST_DEVICEINTERFACE);
     dnf.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
