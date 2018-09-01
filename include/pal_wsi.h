@@ -25,6 +25,16 @@ struct  PAL_DISPLAY_STATE;
 typedef PAL_HANDLE PAL_INPUT;
 typedef PAL_HANDLE PAL_WINDOW;
 
+/* @summary Define the data used to configure the window system interface.
+ * The window system interface (WSI) interacts with windows, displays and user input devices.
+ */
+typedef struct PAL_WINDOW_SYSTEM_INIT {
+    pal_uint32_t                       MaxInputSnapshots;      /* The maximum number of PAL_INPUT objects the application will create. */
+    pal_uint32_t                       MaxGamepadDevices;      /* The maximum number of gamepad devices from which the application will accept user input. */
+    pal_uint32_t                       MaxPointerDevices;      /* The maximum number of pointing devices from which the application will accept user input. */
+    pal_uint32_t                       MaxKeyboardDevices;     /* The maximum number of keyboard devices from which the application will accept user input. */
+} PAL_WINDOW_SYSTEM_INIT;
+
 /* @summary Define the information returned about a display attached to the system.
  */
 typedef struct PAL_DISPLAY_INFO {
@@ -143,12 +153,13 @@ extern "C" {
 #endif
 
 /* @summary Create a object used to interact with the windowing system on the host.
+ * @param init Data used to configure the window system interface.
  * @return A pointer to the window system, or NULL.
  */
 PAL_API(struct PAL_WINDOW_SYSTEM*)
 PAL_WindowSystemCreate
 (
-    void
+    struct PAL_WINDOW_SYSTEM_INIT *init
 );
 
 /* @summary Free resources associated with the window system interface. All window and display handles are invalidated.
