@@ -1,12 +1,21 @@
 /**
  * @summary Implement the PAL Window System Interface APIs for the Win32 desktop platform.
  */
+#include <math.h>
+
+#include <Windows.h>
+#include <Shellapi.h>
+#include <initguid.h>
+#include <XInput.h>
+#include <Dbt.h>
+
+#if WINVER >= 0x0603
+#   include <ShellScalingAPI.h>
+#endif
+
 #include "pal_win32_dylib.h"
 #include "pal_win32_time.h"
 #include "pal_win32_wsi.h"
-
-#include <initguid.h>
-#include <XInput.h>
 
 /* @@@ NOTES:
  * Here's what you were thinking when you had to stop working on this module.
@@ -267,6 +276,53 @@ typedef struct PAL_INPUT_DEVICE_DATA {
     PAL_WSI_INPUT_DEVICE_STATE             DeviceState[2];                     /* The read and write snapshots of the input device state. The write buffer represents the newer state, while the read buffer represents the older state. */
 } PAL_INPUT_DEVICE_DATA;
 
+/* @summary Define the internal data associated with a display attached to the host.
+ */
+typedef struct PAL_DISPLAY_DATA {
+    HMONITOR                               MonitorHandle;                      /* The handle identifying the display to the operating system. */
+    DWORD                                  DisplayOrdinal;                     /* The display ordinal supplied to EnumDisplayDevices. */
+    DWORD                                  RefreshRateHz;                      /* The display refresh rate, in Hertz. */
+    UINT                                   DisplayDpiX;                        /* The horizontal dots-per-inch setting of the display. */
+    UINT                                   DisplayDpiY;                        /* The vertical dots-per-inch setting of the display. */
+    DEVMODE                                DisplayMode;                        /* Information describing the current display mode. */
+    DISPLAY_DEVICE                         DisplayInfo;                        /* Information uniquely identifying the display to the operating system. */
+} PAL_DISPLAY_DATA;
+
+/* @summary Define the internal data associated with a window. This is a superset of the data tracked with PAL_WINDOW_STATE.
+ */
+typedef struct PAL_WINDOW_DATA {
+    struct PAL_WINDOW_SYSTEM              *WindowSystem;                       /* A pointer back to the owning WSI_WINDOW_SYSTEM. */
+    HWND                                   OsWindowHandle;                     /* The operating system window handle. */
+    HINSTANCE                              OsModuleHandle;                     /* The HINSTANCE of the application that created the window. */
+    HMONITOR                               DisplayHandle;                      /* The HMONITOR of the display that owns the window. */
+    pal_sint32_t                           DisplayPositionX;                   /* The display top-left corner position, in virtual display space. */
+    pal_sint32_t                           DisplayPositionY;                   /* The display top-left corner position, in virtual display space. */
+    pal_uint32_t                           DisplaySizeX;                       /* The display width, in physical pixels. */
+    pal_uint32_t                           DisplaySizeY;                       /* The display height, in physical pixels. */
+    pal_sint32_t                           WindowPositionX;                    /* The window top-left corner position, in virtual display space. */
+    pal_sint32_t                           WindowPositionY;                    /* The window top-left corner position, in virtual display space. */
+    pal_uint32_t                           WindowSizeLogicalX;                 /* The window width, in logical pixels. */
+    pal_uint32_t                           WindowSizeLogicalY;                 /* The window height, in logical pixels. */
+    pal_uint32_t                           WindowSizePhysicalX;                /* The window width, in physical pixels. */
+    pal_uint32_t                           WindowSizePhysicalY;                /* The window height, in physical pixels. */
+    pal_uint32_t                           ClientSizeLogicalX;                 /* The window client area width, in logical pixels. */
+    pal_uint32_t                           ClientSizeLogicalY;                 /* The window client area height, in logical pixels. */
+    pal_uint32_t                           ClientSizePhysicalX;                /* The window client area width, in physical pixels. */
+    pal_uint32_t                           ClientSizePhysicalY;                /* The window client area height, in physical pixels. */
+    pal_sint32_t                           RestorePositionX;                   /* The last-known position of the window. Not updated for fullscreen windows. */
+    pal_sint32_t                           RestorePositionY;                   /* The last-known position of the window. Not updated for fullscreen windows. */
+    pal_uint32_t                           RestoreSizeX;                       /* The last-known size of the window client area. Not updated for fullscreen windows. */
+    pal_uint32_t                           RestoreSizeY;                       /* The last-known size of the window client area. Not updated for fullscreen windows. */
+    DWORD                                  RestoreStyle;                       /* The window style saved before toggling windowed/fullscreen. */
+    DWORD                                  RestoreStyleEx;                     /* The extended window style saved before toggling windowed/fullscreen. */
+    pal_uint32_t                           DisplayDpiX;                        /* The horizontal dots-per-inch setting of the display containing the window. */
+    pal_uint32_t                           DisplayDpiY;                        /* The vertical dots-per-inch setting of the display containing the window. */
+    pal_uint32_t                           EventFlags;                         /* One or more bitwise ORd PAL_WINDOW_EVENT_FLAGS indicating changes that have occurred since the previous update. */
+    pal_uint32_t                           EventCount;                         /* The number of events processed during the current update. */
+    pal_uint32_t                           StatusFlags;                        /* One or more bitwise ORd PAL_WINDOW_STATUS_FLAGS values. */
+    pal_uint32_t                           CreateFlags;                        /* The flag values used when the window was created. */
+} PAL_WINDOW_DATA;
+
 /* @summary Define the data associated with the host operating system window manager.
  * The window system interface is responsible for tracking active application windows and processing user input.
  */
@@ -280,6 +336,10 @@ typedef struct PAL_WINDOW_SYSTEM {
     PAL_DISPLAY_INFO                       PrimaryDisplay;                     /* Information about the primary display output. */
     pal_uint8_t                            DisplayPad[48];                     /* Padding to separate display data from input state data. */
 
+    PAL_INPUT_DEVICE_DATA                 *InputDeviceData;                    /* The data associated with application input device snapshots. */
+    pal_uint32_t                           InputGeneration;                    /* The current generation value for the application input device snapshots. */
+    pal_uint32_t                           NumInputSnapshots;                  /* The number of currently acquired input device snapshots. */
+    pal_uint32_t                           MaxInputSnapshots;                  /* The maximum number of input device snapshots that can be acquired by the application. */
     pal_uint32_t                           MaxGamepadDevices;                  /* The maximum number of gamepad devices for which input events will be reported. */
     pal_uint32_t                           MaxPointerDevices;                  /* The maximum number of pointer devices for which input events will be reported. */
     pal_uint32_t                           MaxKeyboardDevices;                 /* The maximum number of keyboard devices for which input events will be reported. */
@@ -293,19 +353,11 @@ typedef struct PAL_WINDOW_SYSTEM {
     pal_uint64_t                           LastGamepadPoll;                    /* The timestamp (in ticks) of the most recent poll of the full set of gamepad ports. */
     PAL_WSI_INPUT_DEVICE_STATE             LatestState;                        /* A copy of the most recent input device state observed by the system. */
 
-    PAL_HANDLE_TABLE                       InputTable;                         /* Table mapping PAL_INPUT to PAL_INPUT_DEVICE_DATA. */
     PAL_HANDLE_TABLE                       WindowTable;                        /* Table mapping PAL_WINDOW to PAL_WINDOW_DATA. */
     PAL_WSI_WIN32_DISPATCH                 Win32Runtime;                       /* The dispatch table used to call dynamically-loaded Win32 entry points. */
     PAL_WSI_XINPUT_DISPATCH                XInputRuntime;                      /* The dispatch table used to call dynamically-loaded XInput entry points. */
     HDEVNOTIFY                             DeviceNotify;                       /* The device notification handle used to receive notification about display and GPU attach/removal. */
 } PAL_WINDOW_SYSTEM;
-
-/* @sumamry Define a wrapper around the data associated with an input device state object.
- */
-typedef struct PAL_INPUT_OBJECT {
-    PAL_INPUT                              Handle;                             /* The input object handle. */
-    PAL_INPUT_DEVICE_DATA                 *DeviceData;                         /* The input device data stream. */
-} PAL_INPUT_OBJECT;
 
 /* @summary Define a wrapper around the data associated with a window object.
  */
@@ -1044,79 +1096,32 @@ PAL_PollXInputGamepads
     return count;
 }
 
-/* @summary Create a new PAL_INPUT_OBJECT.
- * @param obj The PAL_INPUT_OBJECT to populate.
- * @param wsi The PAL_WINDOW_SYSTEM managing the input object.
- * @return Zero if the object is created successfully, or non-zero if an error occurred.
+/* @summary Retrieve the PAL_INPUT_DEVICE_DATA for a given PAL_INPUT handle.
+ * @param wsi The Window System Interface being queried.
+ * @param handle The handle of the input object.
+ * @return The corresponding device data, or NULL if the handle is invalid.
  */
-static int
-PAL_InputObjectCreate
+static PAL_INLINE struct PAL_INPUT_DEVICE_DATA*
+PAL_InputGetSnapshotForHandle
 (
-    struct PAL_INPUT_OBJECT  *obj, 
-    struct PAL_WINDOW_SYSTEM *wsi
-)
-{
-    PAL_INPUT              handle = PAL_HANDLE_INVALID;
-    PAL_HANDLE_TABLE_CHUNK chunk;
-    PAL_MEMORY_VIEW         view;
-    pal_uint32_t           index;
-
-    if (PAL_HandleTableCreateIds(&wsi->InputTable, &handle, 1) != 0) {
-        goto error_exit;
-    }
-    if (PAL_HandleTableGetChunkForHandle(&wsi->InputTable, &chunk, handle, &index, &view) == NULL) {
-        goto error_exit;
-    }
-    obj->Handle     = handle;
-    obj->DeviceData = PAL_MemoryViewStreamAt(PAL_INPUT_DEVICE_DATA, &view, PAL_WSS_INPUT_DEVICE_DATA, index);
-    return  0;
-
-error_exit:
-    obj->Handle     = PAL_HANDLE_INVALID;
-    obj->DeviceData = NULL;
-    return -1;
-}
-
-/* @summary Resolve a PAL_INPUT handle into a PAL_INPUT_OBJECT instance.
- * @param obj The PAL_INPUT_OBJECT to populate with data for the object.
- * @param wsi The PAL_WINDOW_SYSTEM managing the PAL_INPUT object.
- * @param handle The handle to resolve.
- * @return Zero if the object is successfully resolved, or non-zero if the handle was invalid.
- */
-static PAL_INLINE int
-PAL_InputObjectResolve
-(
-    struct PAL_INPUT_OBJECT  *obj, 
     struct PAL_WINDOW_SYSTEM *wsi, 
     PAL_INPUT              handle
 )
 {
-    PAL_HANDLE_TABLE_CHUNK chunk;
-    PAL_MEMORY_VIEW         view;
-    pal_uint32_t           index;
-    if (PAL_HandleTableGetChunkForHandle(&wsi->InputTable, &chunk, handle, &index, &view) != NULL) {
-        obj->Handle     = handle;
-        obj->DeviceData = PAL_MemoryViewStreamAt(PAL_INPUT_DEVICE_DATA, &view, PAL_WSS_INPUT_DEVICE_DATA, index);
-        return  0;
+    pal_uint32_t names = PAL_HandleValueGetNamespace (handle);
+    pal_uint32_t chunk = PAL_HandleValueGetChunkIndex(handle);
+    pal_uint32_t index = PAL_HandleValueGetStateIndex(handle);
+    pal_uint32_t gener = PAL_HandleValueGetGeneration(handle);
+
+    if (chunk == 0 && names == PAL_WINDOW_SYSTEM_NAMESPACE_INPUT && gener == wsi->InputGeneration && index < wsi->NumInputSnapshots) {
+        return &wsi->InputDeviceData[index];
     } else {
-        obj->Handle     = PAL_HANDLE_INVALID;
-        obj->DeviceData = NULL;
-        return -1;
+        assert(chunk == 0);
+        assert(gener == wsi->InputGeneration);
+        assert(index  < wsi->NumInputSnapshots);
+        assert(names == PAL_WINDOW_SYSTEM_NAMESPACE_INPUT);
+        return NULL;
     }
-}
-
-/* @summary Free resources associated with a PAL_INPUT object and invalidate the handle.
- * @param wsi The PAL_WINDOW_SYSTEM managing the input object.
- * @param handle The handle of the object to delete.
- */
-static void
-PAL_InputObjectDelete
-(
-    struct PAL_WINDOW_SYSTEM *wsi, 
-    PAL_INPUT              handle
-)
-{
-    PAL_HandleTableDeleteIds(&wsi->InputTable, &handle, 1);
 }
 
 #if 0
@@ -2851,6 +2856,50 @@ PAL_InputDeviceListCreate_Keyboard
     return PAL_InputDeviceListCreate(arena, max_devices, s, a, list_size);
 }
 
+/* @summary Determine the amount of memory required for the entire set of application input snapshots.
+ * @param init The PAL_WINDOW_SYSTEM_INIT describing the number of snapshots and device limits.
+ * @return The number of bytes required to initialize the PAL_WINDOW_SYSTEM::InputDeviceData field.
+ */
+static pal_uint32_t
+PAL_InputSnapshotArrayQueryMemorySize
+(
+    struct PAL_WINDOW_SYSTEM_INIT *init
+)
+{
+    pal_uint32_t required_size = 0;
+    pal_uint32_t          i, n;
+    /* include the size for the descriptor array */
+    required_size += PAL_AllocationSizeArray(PAL_INPUT_DEVICE_DATA , init->MaxInputSnapshots);
+    /* include the size for each individual list */
+    for (i = 0, n = init->MaxInputSnapshots * 2; i < n; ++i) {
+        required_size += PAL_InputDeviceListQueryMemorySize_Gamepad (init->MaxGamepadDevices);
+        required_size += PAL_InputDeviceListQueryMemorySize_Pointer (init->MaxPointerDevices);
+        required_size += PAL_InputDeviceListQueryMemorySize_Keyboard(init->MaxKeyboardDevices);
+    }
+    return required_size;
+}
+
+/* @summary Copy the Window System latest input device state to a PAL_INPUT device state buffer.
+ * @param wsi The source Window System Interface.
+ * @param dst The destination PAL_INPUT_DEVICE_DATA, resolved from the PAL_INPUT handle.
+ * @param write_index The zero-based index of the state buffer to update.
+ */
+static void
+PAL_WindowSystemCopyInputDeviceState
+(
+    struct PAL_WINDOW_SYSTEM     *wsi, 
+    struct PAL_INPUT_DEVICE_DATA *dst, 
+    pal_uint32_t          write_index
+)
+{
+    dst->DeviceState[write_index].LastUpdateTime = wsi->LastUpdateTime;
+    dst->DeviceState[write_index].GamepadPorts   = wsi->LatestState.GamepadPorts;
+    dst->DeviceState[write_index].Reserved       = 0;
+    PAL_InputDeviceListCopy(dst->DeviceState[write_index].GamepadDeviceList , wsi->LatestState.GamepadDeviceList , wsi->GamepadListSize);
+    PAL_InputDeviceListCopy(dst->DeviceState[write_index].PointerDeviceList , wsi->LatestState.PointerDeviceList , wsi->PointerListSize);
+    PAL_InputDeviceListCopy(dst->DeviceState[write_index].KeyboardDeviceList, wsi->LatestState.KeyboardDeviceList, wsi->KeyboardListSize);
+}
+
 PAL_API(struct PAL_WINDOW_SYSTEM*)
 PAL_WindowSystemCreate
 (
@@ -2865,11 +2914,13 @@ PAL_WindowSystemCreate
     PAL_MEMORY_LAYOUT      table_layout;
     PAL_MODULE                   shcore;
     PAL_MODULE                   xinput;
+    pal_uint32_t                   i, n;
     SYSTEM_INFO                 sysinfo;
     MONITORINFO                 moninfo;
     WNDCLASSEX                 wndclass;
     POINT                            pt;
     RECT                             rc;
+    RAWINPUTDEVICE        ri_devices[2];
     WCHAR const             *class_name =L"PAL__NotifyClass";
     HINSTANCE                    module =(HINSTANCE) GetModuleHandleW(NULL);
     HMONITOR                    monitor = NULL;
@@ -2879,21 +2930,22 @@ PAL_WindowSystemCreate
     pal_uint8_t              *base_addr = NULL;
     pal_usize_t           required_size = 0;
     pal_uint32_t const     MAX_DISPLAYS = 64;
+    DWORD                  ri_dev_count = 0;
     DWORD                    error_code = ERROR_SUCCESS;
     DWORD                         style = WS_POPUP;
     DWORD                      style_ex = WS_EX_NOACTIVATE;// | WS_EX_NOREDIRECTIONBITMAP;
 
     if (init->MaxGamepadDevices > PAL_WSI_MAX_INPUT_DEVICES) {
         assert(init->MaxGamepadDevices <= PAL_WSI_MAX_INPUT_DEVICES);
-        return -1;
+        return NULL;
     }
     if (init->MaxPointerDevices > PAL_WSI_MAX_INPUT_DEVICES) {
         assert(init->MaxPointerDevices <= PAL_WSI_MAX_INPUT_DEVICES);
-        return -1;
+        return NULL;
     }
     if (init->MaxKeyboardDevices > PAL_WSI_MAX_INPUT_DEVICES) {
         assert(init->MaxKeyboardDevices <= PAL_WSI_MAX_INPUT_DEVICES);
-        return -1;
+        return NULL;
     }
 
     /* dynamically resolve entry points */
@@ -2938,6 +2990,7 @@ PAL_WindowSystemCreate
     GetNativeSystemInfo(&sysinfo);
     required_size  = PAL_AllocationSizeType (PAL_WINDOW_SYSTEM);
     required_size += PAL_AllocationSizeArray(PAL_DISPLAY_DATA, MAX_DISPLAYS);
+    required_size += PAL_InputSnapshotArrayQueryMemorySize(init);
     required_size += PAL_InputDeviceListQueryMemorySize_Gamepad (init->MaxGamepadDevices);
     required_size += PAL_InputDeviceListQueryMemorySize_Pointer (init->MaxPointerDevices);
     required_size += PAL_InputDeviceListQueryMemorySize_Keyboard(init->MaxKeyboardDevices);
@@ -2964,11 +3017,15 @@ PAL_WindowSystemCreate
     /* initialize the window system data */
     wsi                     = PAL_MemoryArenaAllocateHostType (&arena, PAL_WINDOW_SYSTEM);
     wsi->ActiveDisplays     = PAL_MemoryArenaAllocateHostArray(&arena, PAL_DISPLAY_DATA, MAX_DISPLAYS);
+    wsi->InputDeviceData    = PAL_MemoryArenaAllocateHostArray(&arena, PAL_INPUT_DEVICE_DATA, init->MaxInputSnapshots);
     wsi->NotifyWindow       = NULL;
     wsi->DisplayCount       = 0;
     wsi->DisplayCapacity    = MAX_DISPLAYS;
     wsi->DisplayEventFlags  = PAL_DISPLAY_EVENT_FLAGS_NONE;
     wsi->Reserved           = 0;
+    wsi->InputGeneration    = 1;
+    wsi->NumInputSnapshots  = 0;
+    wsi->MaxInputSnapshots  = init->MaxInputSnapshots;
     wsi->MaxGamepadDevices  = init->MaxGamepadDevices;
     wsi->MaxPointerDevices  = init->MaxPointerDevices;
     wsi->MaxKeyboardDevices = init->MaxKeyboardDevices;
@@ -2978,6 +3035,27 @@ PAL_WindowSystemCreate
     wsi->LastUpdateTime     = 0;
     wsi->LastGamepadPoll    = 0;
     wsi->DeviceNotify       = NULL;
+
+    for (i = 0, n = init->MaxInputSnapshots; i < n; ++i) {
+        PAL_INPUT_DEVICE_DATA *snapshot             = &wsi->InputDeviceData[i];
+        snapshot->WindowSystem                      =  wsi;
+        snapshot->WriteIndex                        = 0;
+        snapshot->Reserved                          = 0;
+
+        snapshot->DeviceState[0].LastUpdateTime     = 0;
+        snapshot->DeviceState[0].GamepadPorts       = 0;
+        snapshot->DeviceState[0].Reserved           = 0;
+        snapshot->DeviceState[0].GamepadDeviceList  = PAL_InputDeviceListCreate_Gamepad (&arena, init->MaxGamepadDevices , NULL);
+        snapshot->DeviceState[0].PointerDeviceList  = PAL_InputDeviceListCreate_Pointer (&arena, init->MaxPointerDevices , NULL);
+        snapshot->DeviceState[0].KeyboardDeviceList = PAL_InputDeviceListCreate_Keyboard(&arena, init->MaxKeyboardDevices, NULL);
+
+        snapshot->DeviceState[1].LastUpdateTime     = 0;
+        snapshot->DeviceState[1].GamepadPorts       = 0;
+        snapshot->DeviceState[1].Reserved           = 0;
+        snapshot->DeviceState[1].GamepadDeviceList  = PAL_InputDeviceListCreate_Gamepad (&arena, init->MaxGamepadDevices , NULL);
+        snapshot->DeviceState[1].PointerDeviceList  = PAL_InputDeviceListCreate_Pointer (&arena, init->MaxPointerDevices , NULL);
+        snapshot->DeviceState[1].KeyboardDeviceList = PAL_InputDeviceListCreate_Keyboard(&arena, init->MaxKeyboardDevices, NULL);
+    }
 
     InitializeSRWLock(&wsi->InputUpdateLock);
     wsi->LatestState.LastUpdateTime      = 0;
@@ -2995,13 +3073,6 @@ PAL_WindowSystemCreate
      * this populates the ActiveDisplays array and sets DisplayCount.
      */
     PAL_EnumerateDisplays(wsi);
-
-    /* initialize the handle table for input objects */
-    PAL_MemoryLayoutInit(&table_layout);
-    PAL_MemoryLayoutAdd (&table_layout, PAL_INPUT_DEVICE_DATA);
-    if (PAL_HandleTypeDefine(&wsi->InputTable, &table_layout, 8, PAL_WINDOW_SYSTEM_NAMESPACE_INPUT) != 0) {
-        goto cleanup_and_fail;
-    }
 
     /* initialize the handle table for window objects */
     PAL_MemoryLayoutInit(&table_layout);
@@ -3049,12 +3120,34 @@ PAL_WindowSystemCreate
      */
     ZeroMemory(&dnf, sizeof(DEV_BROADCAST_DEVICEINTERFACE));
     dnf.dbcc_size  = sizeof(DEV_BROADCAST_DEVICEINTERFACE);
-    dnf.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
+    dnf.dbcc_devicetype   = DBT_DEVTYP_DEVICEINTERFACE;
     if ((notify_dev = RegisterDeviceNotification(notify_wnd, &dnf, DEVICE_NOTIFY_WINDOW_HANDLE|DEVICE_NOTIFY_ALL_INTERFACE_CLASSES)) == NULL) {
         error_code  = GetLastError();
         goto cleanup_and_fail;
     }
     wsi->DeviceNotify = notify_dev;
+
+    /* register the window with RawInput to receive events and device notifications.
+     * the magic numbers come from http://www.usb.org/developers/hidpage/Hut1_12v2.pdf
+     */
+    if (init->MaxPointerDevices > 0) {
+        ri_devices[ri_dev_count].usUsagePage = 1;
+        ri_devices[ri_dev_count].usUsage     = 2;
+        ri_devices[ri_dev_count].dwFlags     = RIDEV_DEVNOTIFY;
+        ri_devices[ri_dev_count].hwndTarget  = notify_wnd;
+        ri_dev_count++;
+    }
+    if (init->MaxKeyboardDevices > 0) {
+        ri_devices[ri_dev_count].usUsagePage = 1;
+        ri_devices[ri_dev_count].usUsage     = 6;
+        ri_devices[ri_dev_count].dwFlags     = RIDEV_DEVNOTIFY;
+        ri_devices[ri_dev_count].hwndTarget  = notify_wnd;
+        ri_dev_count++;
+    }
+    if (ri_dev_count > 0 && RegisterRawInputDevices(ri_devices, ri_dev_count, sizeof(RAWINPUTDEVICE)) == FALSE) {
+        error_code   = GetLastError();
+        goto cleanup_and_fail;
+    }
     return wsi;
 
 cleanup_and_fail:
@@ -3116,14 +3209,55 @@ PAL_WindowSystemDelete
     }
 }
 
-PAL_API(void)
-PAL_WindowSystemUpdate
+PAL_API(PAL_INPUT)
+PAL_InputAcquire
 (
     struct PAL_WINDOW_SYSTEM *wsi
 )
 {
+    if (wsi->NumInputSnapshots != wsi->MaxInputSnapshots) {
+        pal_uint32_t     index  = wsi->NumInputSnapshots++;
+        pal_uint32_t     gener  = wsi->InputGeneration;
+        pal_uint32_t     names  = PAL_WINDOW_SYSTEM_NAMESPACE_INPUT;
+        PAL_HANDLE      handle  = PAL_HandleValuePack(0, index, names, gener);
+        PAL_INPUT_DEVICE_DATA *p=&wsi->InputDeviceData[index]; 
+        p->WindowSystem = wsi; p->WriteIndex = 0; p->Reserved = 0;
+        PAL_WindowSystemCopyInputDeviceState(wsi, p, 0);
+        PAL_WindowSystemCopyInputDeviceState(wsi, p, 1);
+        return handle;
+    } else {
+        return PAL_HANDLE_INVALID;
+    }
+}
+
+PAL_API(void)
+PAL_InputRelease
+(
+    struct PAL_WINDOW_SYSTEM *wsi
+)
+{
+    pal_uint32_t  next_gen =(wsi->InputGeneration + 1) & PAL_HANDLE_GENER_MASK;
+    wsi->InputGeneration   = next_gen;
+    wsi->NumInputSnapshots = 0;
+}
+
+PAL_API(void)
+PAL_WindowSystemUpdate
+(
+    struct PAL_WINDOW_SYSTEM *wsi, 
+    PAL_INPUT               input
+)
+{
+    PAL_INPUT_DEVICE_DATA *idp;
+    /* process pending messages and update wsi->LatestState */
     PAL_WindowSystemProcessDisplayUpdates(wsi);
     PAL_WindowSystemProcessWindowUpdates(wsi);
+    /* copy the input data for the caller */
+    if (input != PAL_HANDLE_INVALID && (idp = PAL_InputGetSnapshotForHandle(wsi, input)) != NULL) {
+        PAL_WindowSystemCopyInputDeviceState(wsi, idp, idp->WriteIndex);
+        /* TODO: swap the write index when events get generated */
+    }
+    /* TODO: reset the appropriate fields of wsi->LatestState */
 }
 
 PAL_API(pal_uint32_t)
@@ -3313,6 +3447,7 @@ PAL_WindowCreate
     if (PAL_WindowObjectCreate(&obj, wsi) != 0) {
         return PAL_HANDLE_INVALID;
     }
+    obj.WindowData->WindowSystem        = wsi;
     obj.WindowData->OsWindowHandle      = NULL;
     obj.WindowData->OsModuleHandle      = module;
     obj.WindowData->DisplayHandle       = monitor;
@@ -3414,10 +3549,12 @@ PAL_WindowUpdateState
 (
     struct PAL_WINDOW_STATE *state, 
     struct PAL_WINDOW_SYSTEM  *wsi, 
-    PAL_WINDOW              window
+    PAL_WINDOW              window, 
+    PAL_INPUT                input
 )
 {
-    PAL_WINDOW_OBJECT obj;
+    PAL_INPUT_DEVICE_DATA *idp;
+    PAL_WINDOW_OBJECT      obj;
     if (PAL_WindowObjectResolve(&obj, wsi, window) == 0) {
         PAL_WINDOW_DATA  *data = obj.WindowData;
         HWND              hwnd = obj.WindowData->OsWindowHandle;
@@ -3434,6 +3571,9 @@ PAL_WindowUpdateState
             TranslateMessage(&msg);
             DispatchMessage(&msg);
             nev++;
+        }
+        /* copy the input data for the caller */
+        if (input != PAL_HANDLE_INVALID && (idp = PAL_InputGetSnapshotForHandle(wsi, input)) != NULL) {
         }
         /* return the updated state to the caller */
         PAL_CopyWindowDataToWindowState(state, data);
