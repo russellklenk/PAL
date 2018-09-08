@@ -160,7 +160,7 @@
  */
 #ifndef PAL_AtomicAdd_s32
 #define PAL_AtomicAdd_s32(_field, _add)                                         \
-    (pal_sint32_t)_InterlockedAdd((volatile LONG*)&(_field), (LONG)(_add))
+    (pal_sint32_t) InterlockedAdd((volatile LONG*)&(_field), (LONG)(_add))
 #endif
 
 /* @summary Atomically load a 32-bit unsigned integer value, increment it, and store the result back to the same location.

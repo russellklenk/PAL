@@ -751,7 +751,7 @@ PAL_EventCountSignal
 )
 {
     pal_sint32_t val;
-    pal_sint32_t key = _InterlockedAdd((volatile LONG*)&ec->Counter, 0);
+    pal_sint32_t key = InterlockedAdd((volatile LONG*)&ec->Counter, 0);
     if (key & 1)
     {
         PAL_MonitorAcquire(&ec->Monitor);
